@@ -32,6 +32,8 @@ netlist_t *gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
   fprintf (fp, "** characterization run **\n");
   fprintf (fp, "**************************\n");
 
+  /*-- XXX: power and ground are actually in the netlist --*/
+
   fprintf (fp, ".include '%s'\n\n", config_get_string ("xcell.tech_setup"));
   fprintf (fp, ".global Vdd\n");
   fprintf (fp, ".global GND\n");
@@ -77,13 +79,18 @@ netlist_t *gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
   fprintf (fp, "Vv0 GND 0 0.0\n");
   fprintf (fp, "Vv1 Vdd 0 %g\n", config_get_real ("xcell.Vdd"));
 
-  /*-- load cap that is swept --*/
+  /*-- load cap on output that is swept --*/
   fprintf (fp, "Clc p%d 0 load\n\n", idx_out);
 
   return nl;
 }
 
 
+/*
+ *
+ *  Create a testbench to generate all the leakage scenarios
+ *
+ */
 int run_leakage_scenarios (Act *a, ActNetlistPass *np, Process *p)
 {
   FILE *fp;
@@ -109,9 +116,9 @@ int run_leakage_scenarios (Act *a, ActNetlistPass *np, Process *p)
     return 0;
   }
 
-  fp = fopen ("_spice_.spi", "w");
+  fp = fopen ("_spicelk_.spi", "w");
   if (!fp) {
-    fatal_error ("Could not open _spice_.spi for writing");
+    fatal_error ("Could not open _spicelk_.spi for writing");
   }
 
   /* -- std header that instantiates the module -- */
@@ -170,9 +177,13 @@ int run_leakage_scenarios (Act *a, ActNetlistPass *np, Process *p)
   fprintf (fp, ".end\n");
 
   fclose (fp);
-
   
   /* -- run the spice simulation -- */
+
+  /* -- extract results from spice run --
+     NOTE: we can use this to build the truth table for any group of
+     combinational gates!
+  */
   
   return 1;
 }
@@ -182,14 +193,38 @@ int run_spice (Act *a, ActNetlistPass *np, Process *p)
 {
   FILE *fp;
   netlist_t *nl;
+  int is_stateholding = 0;
 
-  return run_leakage_scenarios (a, np, p);
+  nl = np->getNL (p);
+  for (node_t *n = nl->hd; n; n = n->next) {
+    if (n->v) {
+      if (n->v->e_up || n->v->e_dn) {
+	/* there's a gate here */
+	if (n->v->stateholding && !n->v->unstaticized) {
+	  is_stateholding++;
+	  break;
+	}
+      }
+    }
+  }
+
+  if (!run_leakage_scenarios (a, np, p)) {
+    return 0;
+  }
+
+  printf ("%s stateholding: %d\n", p->getName(), is_stateholding);
 
   /* -- dynamic scenarios -- */
+  if (is_stateholding > 1) {
+    warning ("Cannot handle modules with more than one state-holding gate at present.");
+    return 0;
+  }
+
+  return 1;
   
-  fp = fopen ("_spice_.spi", "w");
+  fp = fopen ("_spicedy_.spi", "w");
   if (!fp) {
-    fatal_error ("Could not open _spice_.spi for writing");
+    fatal_error ("Could not open _spicedy_.spi for writing");
   }
   /* -- std header that instantiates the module -- */
   nl = gen_spice_header (fp, a, np, p);
@@ -197,10 +232,7 @@ int run_spice (Act *a, ActNetlistPass *np, Process *p)
     fclose (fp);
     return 0;
   }
-
-
   
-
   fclose (fp);
   return 1;
 }
@@ -388,55 +420,74 @@ int main (int argc, char **argv)
   /* -- emit header -- */
   lib_emit_header (fp, argv[2]);
 
-
-  for (int i=0; i <= cp->numCellMax(); i++) {
-    char buf[1024];
-    Process *p = cp->getCell (i);
-    netlist_t *nl;
-    if (!p) continue;
-
-    nl = np->getNL (p);
-    if (!nl) {
-      fatal_error ("Cells file needs to instantiate all cells. %s missing.",
-		   p->getName());
-    }
-
-    /*-- characterize cell --*/
-
-    NLFP (fp, "cell(");
-    a->msnprintf (buf, 1024, "%s", p->getName());
-    fprintf (fp, "%s) {\n", buf);
-    tab();
-
-    /* XXX what is this? */
-    NLFP (fp, "area : 25;\n");
-
-    /* XXX: fixme emit power and ground pins */
-    NLFP (fp, "pg_pin(GND) {\n");
-    tab();
-    NLFP (fp, "pg_type : primary_ground;\n");
-    untab();
-    NLFP (fp, "}\n");
-    
-    NLFP (fp, "pg_pin(Vdd) {\n");
-    tab();
-    NLFP (fp, "pg_type : primary_power;\n");
-    untab();
-    NLFP (fp, "}\n");
-
-    /* -- we now need to run spice -- */
-    run_spice (a, np, p);
-
-    /* -- leakage power -- */
-
-    /* -- input pins -- */
-
-    /* -- output pins -- */
-
-    untab();
-    NLFP (fp, "}\n");
+  UserDef  *topu = a->Global()->findType ("characterize<>");
+  if (!topu) {
+    fatal_error ("File `%s': missing top-level characterize process and instance", argv[1]);
+  }
+  
+  Process *top = dynamic_cast<Process *> (topu);
+  if (!top) {
+    fatal_error ("File `%s': missing top-level characterize process", argv[1]);
   }
 
+  for (int i=1; i; i++) {
+    char buf[1024];
+    netlist_t *nl;
+    InstType *it;
+    Process *p;
+
+    snprintf (buf, 1024, "g%d", i);
+    it = top->Lookup (buf);
+    if (!it) {
+      /* done */
+      break;
+    }
+
+    if (TypeFactory::isProcessType (it)) {
+      p = dynamic_cast<Process *>(it->BaseType());
+
+      nl = np->getNL (p);
+      if (!nl) {
+	fatal_error ("Cells file needs to instantiate all cells. %s missing.",
+		     p->getName());
+      }
+
+      /*-- characterize cell --*/
+
+      NLFP (fp, "cell(");
+      a->mfprintfproc (fp, p);
+      fprintf (fp, ") {\n");
+      tab();
+
+      /* XXX what is this? */
+      NLFP (fp, "area : 25;\n");
+
+      /* XXX: fixme emit power and ground pins */
+      NLFP (fp, "pg_pin(GND) {\n");
+      tab();
+      NLFP (fp, "pg_type : primary_ground;\n");
+      untab();
+      NLFP (fp, "}\n");
+    
+      NLFP (fp, "pg_pin(Vdd) {\n");
+      tab();
+      NLFP (fp, "pg_type : primary_power;\n");
+      untab();
+      NLFP (fp, "}\n");
+
+      /* -- we now need to run spice -- */
+      run_spice (a, np, p);
+
+      /* -- leakage power -- */
+
+      /* -- input pins -- */
+
+      /* -- output pins -- */
+
+      untab();
+      NLFP (fp, "}\n");
+    }
+  }
 
   lib_emit_footer (fp, argv[2]);
   fclose (fp);

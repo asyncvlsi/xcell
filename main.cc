@@ -24,6 +24,29 @@
 #include <act/act.h>
 #include <act/passes.h>
 
+#define NLFP  line(fp); fprintf
+
+static int tabs = 0;
+
+void line(FILE *fp)
+{
+  for (int i=0; i < tabs; i++) {
+    fprintf (fp, "   ");
+  }
+}
+
+void tab (void)
+{
+  tabs++;
+}
+
+void untab (void)
+{
+  Assert (tabs > 0, "Hmm");
+  tabs--;
+}
+
+
 netlist_t *gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
 {
   netlist_t *nl;
@@ -91,11 +114,16 @@ netlist_t *gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
  *  Create a testbench to generate all the leakage scenarios
  *
  */
-int run_leakage_scenarios (Act *a, ActNetlistPass *np, Process *p)
+double *run_leakage_scenarios (FILE *fp,
+			       Act *a, ActNetlistPass *np, Process *p)
 {
-  FILE *fp;
+  FILE *sfp;
   netlist_t *nl;
   int num_inputs;
+  char buf[1024];
+  double *ret;
+
+  printf ("Analyzing leakage for %s\n", p->getName());
 
   nl = np->getNL (p);
 
@@ -108,24 +136,24 @@ int run_leakage_scenarios (Act *a, ActNetlistPass *np, Process *p)
   }
   if (num_inputs == 0) {
     warning ("Cell %s: no inputs?", p->getName());
-    return 0;
+    return NULL;
   }
 
   if (num_inputs > 8) {
     warning ("High fan-in cell?");
-    return 0;
+    return NULL;
   }
 
-  fp = fopen ("_spicelk_.spi", "w");
-  if (!fp) {
+  sfp = fopen ("_spicelk_.spi", "w");
+  if (!sfp) {
     fatal_error ("Could not open _spicelk_.spi for writing");
   }
 
   /* -- std header that instantiates the module -- */
-  nl = gen_spice_header (fp, a, np, p);
+  nl = gen_spice_header (sfp, a, np, p);
   if (!nl) {
-    fclose (fp);
-    return 0;
+    fclose (sfp);
+    return NULL;
   }
 
   double vdd = config_get_real ("xcell.Vdd");
@@ -145,51 +173,110 @@ int run_leakage_scenarios (Act *a, ActNetlistPass *np, Process *p)
       pos--;
     }
 
-    fprintf (fp, "Vn%d p%d 0 PWL (0p 0 1000p 0\n", k, pos);
+    fprintf (sfp, "Vn%d p%d 0 PWL (0p 0 1000p 0\n", k, pos);
     int tm = 1;
     for (int i=0; i < (1 << num_inputs); i++) {
       if ((i >> k) & 0x1) {
-	fprintf (fp, "+%dp %g %dp %g\n", tm*10000 + 1, vdd, (tm+1)*10000, vdd);
+	fprintf (sfp, "+%dp %g %dp %g\n", tm*10000 + 1, vdd, (tm+1)*10000, vdd);
       }
       else {
-	fprintf (fp, "+%dp 0 %dp 0\n", tm*10000 + 1, (tm+1)*10000);
+	fprintf (sfp, "+%dp 0 %dp 0\n", tm*10000 + 1, (tm+1)*10000);
       }
       tm ++;
     }
-    fprintf (fp, "+)\n\n");
+    fprintf (sfp, "+)\n\n");
   }
 
-  fprintf (fp, "\n");
+  fprintf (sfp, "\n");
 
   /* -- measurement of current -- */
 
   int tm = 1;
   for (int i=0; i < (1 << num_inputs); i++) {
-    fprintf (fp, ".measure tran current_%d avg i(Vdd) from %dp to %dp\n",
+    fprintf (sfp, ".measure tran current_%d avg i(Vv1) from %dp to %dp\n",
 	     i, tm*10000 + 1000, (tm+1)*10000 - 1000);
-    fprintf (fp, ".measure tran leak_%d PARAM='-current_%d*%g'\n", i, i,
+    fprintf (sfp, ".measure tran leak_%d PARAM='-current_%d*%g'\n", i, i,
 	     vdd);
     tm++;
   }
 
-  fprintf (fp, ".tran 10p %dp\n", tm*10000);
-  fprintf (fp, ".option post\n");
-  fprintf (fp, ".end\n");
+  fprintf (sfp, ".tran 10p %dp\n", tm*10000);
+  /*fprintf (fp, ".option post\n");*/
+  fprintf (sfp, ".end\n");
 
-  fclose (fp);
+
+  fclose (sfp);
   
   /* -- run the spice simulation -- */
+  system ("Xyce _spicelk_.spi > _spicelk_.log 2>&1");
 
   /* -- extract results from spice run --
      NOTE: we can use this to build the truth table for any group of
      combinational gates!
   */
+
+  sfp = fopen ("_spicelk_.spi.mt0", "r");
+  if (!sfp) {
+    fatal_error ("Could not open measurement output from Xyce\n");
+  }
+  while (fgets (buf, 1024, sfp)) {
+    double lk;
+    char *s = strtok (buf, " \t");
+    if (strncasecmp (s, "leak", 4) == 0) {
+      int i;
+      if (sscanf (s + 5, "%d", &i) != 1) {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+      s = strtok (NULL, " \t");
+      if (strcmp (s, "=") != 0) {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+      s = strtok (NULL, " \t");
+      if (sscanf (s, "%lg", &lk) != 1) {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+      NLFP (fp, "leakage_power() {\n");
+      tab();
+      NLFP (fp, "when : \"");
+      for (int k=0; k < num_inputs; k++) {
+	int pos;
+	pos = k;
+	for (int j=0; j < A_LEN (nl->bN->ports); j++) {
+	  if (nl->bN->ports[j].omit) continue;
+	  if (!nl->bN->ports[j].input) continue;
+	  if (pos == 0) {
+	    pos = j;
+	    break;
+	  }
+	  pos--;
+	}
+	ActId *tmp;
+	tmp = nl->bN->ports[pos].c->toid();
+	tmp->sPrint (buf, 1024);
+	delete tmp;
+
+	if (k > 0) {
+	  fprintf (fp, "&");
+	}
+
+	if (((i >> k) & 1) == 0) {
+	  fprintf (fp, "!");
+	}
+	a->mfprintf (fp, "%s", buf);
+      }
+      fprintf (fp, "\";\n");
+      NLFP (fp, "value : %g;\n", lk/config_get_real ("xcell.units.power_conv"));
+      untab();
+      NLFP (fp, "}\n");
+    }
+  }
+  fclose (sfp);
   
-  return 1;
+  return ret;
 }
 
 
-int run_spice (Act *a, ActNetlistPass *np, Process *p)
+int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
 {
   FILE *fp;
   netlist_t *nl;
@@ -200,7 +287,8 @@ int run_spice (Act *a, ActNetlistPass *np, Process *p)
     if (n->v) {
       if (n->v->e_up || n->v->e_dn) {
 	/* there's a gate here */
-	if (n->v->stateholding && !n->v->unstaticized) {
+	if (n->v->stateholding &&
+	    (!n->v->unstaticized || n->v->manualkeeper != 0)) {
 	  is_stateholding++;
 	  break;
 	}
@@ -208,9 +296,12 @@ int run_spice (Act *a, ActNetlistPass *np, Process *p)
     }
   }
 
-  if (!run_leakage_scenarios (a, np, p)) {
+  if (!run_leakage_scenarios (lfp, a, np, p)) {
     return 0;
   }
+
+  /* dump leakage info */
+  
 
   printf ("%s stateholding: %d\n", p->getName(), is_stateholding);
 
@@ -236,28 +327,6 @@ int run_spice (Act *a, ActNetlistPass *np, Process *p)
   fclose (fp);
   return 1;
 }
-
-static int tabs = 0;
-
-void line(FILE *fp)
-{
-  for (int i=0; i < tabs; i++) {
-    fprintf (fp, "   ");
-  }
-}
-
-void tab (void)
-{
-  tabs++;
-}
-
-void untab (void)
-{
-  Assert (tabs > 0, "Hmm");
-  tabs--;
-}
-
-#define NLFP  line(fp); fprintf
 
 
 void lib_emit_template (FILE *fp, const char *name, const char *prefix,
@@ -323,7 +392,7 @@ void lib_emit_header (FILE *fp, char *name)
   NLFP (fp, "current_unit : \"1%sA\";\n", config_get_string ("xcell.units.current"));
   NLFP (fp, "pulling_resistance_unit : \"1kohm\";\n");
   NLFP (fp, "capacitive_load_unit (1, \"%sF\");\n", config_get_string ("xcell.units.cap"));
-  NLFP (fp, "leakage_power_unit : \"1nW\";\n");
+  NLFP (fp, "leakage_power_unit : \"1%sW\";\n", config_get_string ("xcell.units.power"));
   NLFP (fp, "internal_power_unit : \"1fJ\";\n");
 
   NLFP (fp, "default_connection_class : \"default\";\n");
@@ -397,6 +466,9 @@ int main (int argc, char **argv)
   Act *a;
   FILE *fp;
   char buf[1024];
+
+  Act::Init (&argc, &argv);
+
   if (argc != 3) {
     fatal_error ("Usage: %s <act-cell-file> <libname>\n", argv[0]);
   }
@@ -476,7 +548,7 @@ int main (int argc, char **argv)
       NLFP (fp, "}\n");
 
       /* -- we now need to run spice -- */
-      run_spice (a, np, p);
+      run_spice (fp, a, np, p);
 
       /* -- leakage power -- */
 

@@ -115,14 +115,13 @@ netlist_t *gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
  *  Create a testbench to generate all the leakage scenarios
  *
  */
-double *run_leakage_scenarios (FILE *fp,
-			       Act *a, ActNetlistPass *np, Process *p)
+int run_leakage_scenarios (FILE *fp,
+			   Act *a, ActNetlistPass *np, Process *p)
 {
   FILE *sfp;
   netlist_t *nl;
   int num_inputs;
   char buf[1024];
-  double *ret;
 
   printf ("Analyzing leakage for %s\n", p->getName());
 
@@ -137,12 +136,12 @@ double *run_leakage_scenarios (FILE *fp,
   }
   if (num_inputs == 0) {
     warning ("Cell %s: no inputs?", p->getName());
-    return NULL;
+    return 0;
   }
 
   if (num_inputs > 8) {
     warning ("High fan-in cell?");
-    return NULL;
+    return 0;
   }
 
   sfp = fopen ("_spicelk_.spi", "w");
@@ -154,7 +153,7 @@ double *run_leakage_scenarios (FILE *fp,
   nl = gen_spice_header (sfp, a, np, p);
   if (!nl) {
     fclose (sfp);
-    return NULL;
+    return 0;
   }
 
   double vdd = config_get_real ("xcell.Vdd");
@@ -278,7 +277,7 @@ double *run_leakage_scenarios (FILE *fp,
   unlink ("_spicelk_.spi.prn");
   unlink ("_spicelk_.log");
   
-  return ret;
+  return 1;
 }
 
 

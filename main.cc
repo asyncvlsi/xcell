@@ -20,6 +20,7 @@
  **************************************************************************
  */
 #include <stdio.h>
+#include <unistd.h>
 #include <config.h>
 #include <act/act.h>
 #include <act/passes.h>
@@ -271,6 +272,11 @@ double *run_leakage_scenarios (FILE *fp,
     }
   }
   fclose (sfp);
+
+  unlink ("_spicelk_.spi");
+  unlink ("_spicelk_.spi.mt0");
+  unlink ("_spicelk_.spi.prn");
+  unlink ("_spicelk_.log");
   
   return ret;
 }

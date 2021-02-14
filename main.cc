@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <config.h>
+#include <atrace.h>
 #include <act/act.h>
 #include <act/passes.h>
 
@@ -48,7 +49,7 @@ void untab (void)
 }
 
 
-netlist_t *gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
+int gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
 {
   netlist_t *nl;
 
@@ -86,7 +87,7 @@ netlist_t *gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
       }
       else {
 	warning ("Extend to multi-output gates!");
-	return NULL;
+	return 0;
       }
     }
     fprintf (fp, "p%d ", i);
@@ -96,7 +97,7 @@ netlist_t *gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
 
   if (idx_out == -1) {
     warning ("Cell %s: no outputs?\n", p->getName());
-    return NULL;
+    return 0;
   }
 
   /*-- power supplies --*/
@@ -106,9 +107,30 @@ netlist_t *gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
   /*-- load cap on output that is swept --*/
   fprintf (fp, "Clc p%d 0 load\n\n", idx_out);
 
-  return nl;
+  return 1;
 }
 
+
+int get_num_inputs (netlist_t *nl)
+{
+  int num_inputs = 0;
+  for (int i=0; i < A_LEN (nl->bN->ports); i++) {
+    if (nl->bN->ports[i].omit) continue;
+    if (nl->bN->ports[i].input) {
+      num_inputs++;
+    }
+  }
+  if (num_inputs == 0) {
+    warning ("Cell %s: no inputs?", nl->bN->p->getName());
+    return 0;
+  }
+
+  if (num_inputs > 8) {
+    warning ("High fan-in cell?");
+    return 0;
+  }
+  return num_inputs;
+}
 
 /*
  *
@@ -127,20 +149,8 @@ int run_leakage_scenarios (FILE *fp,
 
   nl = np->getNL (p);
 
-  num_inputs = 0;
-  for (int i=0; i < A_LEN (nl->bN->ports); i++) {
-    if (nl->bN->ports[i].omit) continue;
-    if (nl->bN->ports[i].input) {
-      num_inputs++;
-    }
-  }
+  num_inputs = get_num_inputs (nl);
   if (num_inputs == 0) {
-    warning ("Cell %s: no inputs?", p->getName());
-    return 0;
-  }
-
-  if (num_inputs > 8) {
-    warning ("High fan-in cell?");
     return 0;
   }
 
@@ -150,8 +160,8 @@ int run_leakage_scenarios (FILE *fp,
   }
 
   /* -- std header that instantiates the module -- */
-  nl = gen_spice_header (sfp, a, np, p);
-  if (!nl) {
+  
+  if (!gen_spice_header (sfp, a, np, p)) {
     fclose (sfp);
     return 0;
   }
@@ -202,17 +212,50 @@ int run_leakage_scenarios (FILE *fp,
 
   fprintf (sfp, ".tran 10p %dp\n", tm*10000);
   /*fprintf (fp, ".option post\n");*/
-  fprintf (sfp, ".end\n");
+  if (config_exists ("xcell.extra_sp_txt")) {
+    char **x = config_get_table_string ("xcell.extra_sp_txt");
+    for (int i=0; i < config_get_table_size ("xcell.extra_sp_txt"); i++) {
+      fprintf (sfp, "%s\n", x[i]);
+    }
+  }
+  fprintf (sfp, ".print tran %s", config_get_string ("xcell.extra_print_stmt"));
+  /* print voltages */
+  char bufout[1024];
+  for (int i=0; i < A_LEN (nl->bN->ports); i++) {
+    if (nl->bN->ports[i].omit) continue;
+    if (nl->bN->ports[i].input) continue;
+    ActId *tmp;
+    char buf[1024];
+    tmp = nl->bN->ports[i].c->toid();
+    tmp->sPrint (buf, 1024);
+    delete tmp;
+    fprintf (sfp, "V(xtst%s", config_get_string ("net.spice_path_sep"));
+    a->mfprintf (sfp, "%s", buf);
+    fprintf (sfp, ") ");
 
+    snprintf (bufout, 1024, "xtst.");
+    a->msnprintf (bufout + strlen (bufout), 1024 - strlen (bufout),
+		  "%s", buf);
+    for (int i=0; bufout[i]; i++) {
+      bufout[i] = tolower(bufout[i]);
+    }
+  }
+  fprintf (sfp, "\n");
+	 
+  fprintf (sfp, ".end\n");
 
   fclose (sfp);
   
   /* -- run the spice simulation -- */
-  system ("Xyce _spicelk_.spi > _spicelk_.log 2>&1");
+  snprintf (buf, 1024, "%s _spicelk_.spi > _spicelk_.log 2>&1",
+	    config_get_string ("xcell.spice_binary"));
+  system (buf);
 
-  /* -- extract results from spice run --
-     NOTE: we can use this to build the truth table for any group of
-     combinational gates!
+  /* -- extract results from spice run -- */
+
+
+  /*
+    Step 1: measurements
   */
 
   sfp = fopen ("_spicelk_.spi.mt0", "r");
@@ -272,14 +315,131 @@ int run_leakage_scenarios (FILE *fp,
   }
   fclose (sfp);
 
+  /* -- convert trace file to atrace format -- */
+  if (config_get_int ("xcell.spice_output_fmt") == 0) {
+    /* raw */
+    snprintf (buf, 1024, "tr2alint -r _spicelk_.spi.raw _spicelk_");
+  }
+  else {
+    snprintf (buf, 1024, "tr2alint _spicelk_.spi.tr0 _spicelk_");
+  }
+  system (buf);
+
+  /* 
+     Step 2: truth tables
+  */
+  snprintf (buf, 1024, "_spicelk_");
+  atrace *tr = atrace_open (buf);
+  if (!tr) {
+    fatal_error ("Could not open simulation trace file!");
+  }
+  name_t *timenode, *outnode;
+  snprintf (buf, 1024, "time");
+  timenode = atrace_lookup (tr, buf);
+  if (!timenode) {
+    printf ("Time not found?\n");
+  }
+
+  outnode = atrace_lookup (tr, bufout);
+  if (!outnode) {
+    printf ("Output node `%s' not found", bufout);
+  }
+
+  int nnodes, nsteps, fmt, ts;
+  if (atrace_header (tr, &ts, &nnodes, &nsteps, &fmt)) {
+    fatal_error ("Trace file header corrupted?");
+  }
+
+  if (!outnode || !timenode) {
+    atrace_close (tr);
+    return 0;
+  }
+
+  printf ("%d nodes, %d steps\n", nnodes, nsteps);
+
+  /* -- get values -- */
+  tm = 1;
+  atrace_init_time (tr);
+  atrace_advance_time (tr, 10000e-12/ATRACE_GET_STEPSIZE (tr));
+
+  float vhigh, vlow;
+
+  vhigh = config_get_real ("lint.V_high");
+  vlow = config_get_real ("lint.V_low");
+  
+  for (int i=0; i < (1 << num_inputs); i++) {
+    float val;
+    
+    atrace_advance_time (tr, 5000e-12/ATRACE_GET_STEPSIZE (tr));
+    
+    val = ATRACE_NODE_VAL (tr, outnode);
+
+    if (val >= vhigh) {
+      printf ("out: H @ %g\n", ATRACE_NODE_VAL (tr, timenode));
+    }
+    else if (val <= vlow) {
+      printf ("out: L @ %g\n", ATRACE_NODE_VAL (tr, timenode));
+    }
+    else {
+      printf ("out: X (%g) @ %g\n", val, ATRACE_NODE_VAL (tr, timenode));
+    }
+
+    atrace_advance_time (tr, 5000e-12/ATRACE_GET_STEPSIZE (tr));
+    
+  }
+
+  atrace_close (tr);
+
+#if 0
   unlink ("_spicelk_.spi");
   unlink ("_spicelk_.spi.mt0");
-  unlink ("_spicelk_.spi.prn");
+  unlink ("_spicelk_.spi.raw");
+  unlink ("_spicelk_.spi.tr0");
   unlink ("_spicelk_.log");
+  unlink ("_spicelk_.trace");
+  unlink ("_spicelk_.names");
+#endif
   
   return 1;
 }
 
+
+int run_input_cap_scenarios (FILE *fp,
+			     Act *a, ActNetlistPass *np, Process *p)
+
+{
+  FILE *sfp;
+  netlist_t *nl;
+  int num_inputs;
+  char buf[1024];
+
+  printf ("Analyzing input capacitance for %s\n", p->getName());
+
+  nl = np->getNL (p);
+
+  num_inputs = get_num_inputs (nl);
+  if (num_inputs == 0) {
+    return 0;
+  }
+
+  sfp = fopen ("_spicecap_.spi", "w");
+  if (!sfp) {
+    fatal_error ("Could not open _spicecap_.spi for writing");
+  }
+  if (!gen_spice_header (sfp, a, np, p)) {
+    fclose (sfp);
+    return 0;
+  }
+
+  
+
+
+  fclose (sfp);
+
+  
+
+  return 1;
+}
 
 int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
 {
@@ -301,12 +461,15 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
     }
   }
 
+  /* -- add leakage information to the .lib file -- */
   if (!run_leakage_scenarios (lfp, a, np, p)) {
     return 0;
   }
 
-  /* dump leakage info */
-  
+  /* -- XXX: the leakage scenarios should also record
+          - internal signals
+	  - output value
+  */
 
   printf ("%s stateholding: %d\n", p->getName(), is_stateholding);
 
@@ -323,11 +486,33 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
     fatal_error ("Could not open _spicedy_.spi for writing");
   }
   /* -- std header that instantiates the module -- */
-  nl = gen_spice_header (fp, a, np, p);
-  if (!nl) {
+  if (!gen_spice_header (fp, a, np, p)) {
     fclose (fp);
     return 0;
   }
+
+
+  /* Run dynamic scenarios 
+
+   - combinational logic:
+        a : 0 -> 1 
+	  For each assignment to others where the 0->1 transition
+        changes the output, emit case
+
+	same thing for 1 -> 0
+
+   - state-holding logic, single gate
+   
+       analyze the production rule for the gate
+
+       figure out the values of the other signals in all the leakage
+       cases
+       
+  */
+     
+     
+
+  
   
   fclose (fp);
   return 1;
@@ -486,6 +671,7 @@ int main (int argc, char **argv)
   np->run();
 
   config_read ("xcell.conf");
+  config_read ("lint.conf");
 
   snprintf (buf, 1024, "%s.lib", argv[2]);
 
@@ -554,12 +740,6 @@ int main (int argc, char **argv)
 
       /* -- we now need to run spice -- */
       run_spice (fp, a, np, p);
-
-      /* -- leakage power -- */
-
-      /* -- input pins -- */
-
-      /* -- output pins -- */
 
       untab();
       NLFP (fp, "}\n");

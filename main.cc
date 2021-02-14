@@ -133,14 +133,131 @@ int get_num_inputs (netlist_t *nl)
   return num_inputs;
 }
 
+L_A_DECL (act_booleanized_var_t *, _sh_vars);
+static bitset_t *_tt[2];
+
+void _add_support_var (netlist_t *nl, ActId *id)
+{
+  act_connection *c;
+  phash_bucket_t *b;
+
+  c = id->Canonical (nl->bN->cur);
+  for (int i=0; i < A_LEN (_sh_vars); i++) {
+    if (c == _sh_vars[i]->id) return;
+  }
+  A_NEW (_sh_vars, act_booleanized_var_t *);
+
+  b = phash_lookup (nl->bN->cH, c);
+  Assert (b, "What?!");
+  A_NEXT (_sh_vars) = (act_booleanized_var_t *)b->v;
+  Assert (A_NEXT(_sh_vars)->id == c, "What?!");
+  A_INC (_sh_vars);
+}
+
+void _collect_support (netlist_t *nl, act_prs_expr_t *e)
+{
+  if (!e) return;
+  switch (e->type) {
+  case ACT_PRS_EXPR_AND:
+  case ACT_PRS_EXPR_OR:
+    _collect_support (nl, e->u.e.l);
+    _collect_support (nl, e->u.e.r);
+    break;
+
+  case ACT_PRS_EXPR_NOT:
+    _collect_support (nl, e->u.e.l);
+    break;
+
+  case ACT_PRS_EXPR_LABEL:
+    warning ("labels within state-holding gate...");
+    break;
+
+  case ACT_PRS_EXPR_TRUE:
+  case ACT_PRS_EXPR_FALSE:
+    break;
+
+  case ACT_PRS_EXPR_VAR:
+    _add_support_var (nl, e->u.v.id);
+    break;
+    
+  default:
+    fatal_error ("Unexpected type %d", e->type);
+    break;
+  }
+}
+
+int _eval_expr (netlist_t *nl, act_prs_expr_t *e, unsigned int v)
+{
+  act_connection *c;
+  if (!e) return 0;
+  switch (e->type) {
+  case ACT_PRS_EXPR_AND:
+    if (_eval_expr (nl, e->u.e.l, v) && _eval_expr (nl, e->u.e.r, v)) {
+      return 1;
+    }
+    return 0;
+    break;
+  case ACT_PRS_EXPR_OR:
+    if (_eval_expr (nl, e->u.e.l, v) || _eval_expr (nl, e->u.e.r, v)) {
+      return 1;
+    }
+    return 0;
+    break;
+
+  case ACT_PRS_EXPR_NOT:
+    return 1 - _eval_expr (nl, e->u.e.l, v);
+    break;
+
+  case ACT_PRS_EXPR_LABEL:
+    warning ("labels within state-holding gate...");
+    return 0;
+    break;
+
+  case ACT_PRS_EXPR_TRUE:
+    return 1;
+    break;
+    
+  case ACT_PRS_EXPR_FALSE:
+    return 0;
+    break;
+
+  case ACT_PRS_EXPR_VAR:
+    c = e->u.v.id->Canonical (nl->bN->cur);
+    for (int i=0; i < A_LEN (_sh_vars); i++) {
+      if (_sh_vars[i]->id == c) {
+	return ((v >> i) & 1);
+      }
+    }
+    fatal_error ("Didn't find input variable?!");
+    return 0;
+    break;
+    
+  default:
+    fatal_error ("Unexpected type %d", e->type);
+    return 0;
+    break;
+  }
+}
+
+void _build_truth_table (netlist_t *nl, act_prs_expr_t *e, int idx)
+{
+  for (unsigned int i=0; i < (1 << A_LEN (_sh_vars)); i++) {
+    if (_eval_expr (nl, e, i)) {
+      bitset_set (_tt[idx], i);
+    }
+    else {
+      bitset_clr (_tt[idx], i);
+    }
+  }
+}
+
 /*
  *
  *  Create a testbench to generate all the leakage scenarios
  *
  */
 int run_leakage_scenarios (FILE *fp,
-			   Act *a, ActNetlistPass *np, Process *p,
-			   node_t *sh)
+			   Act *a, ActNetlistPass *np, Process *p)
 {
   FILE *sfp;
   netlist_t *nl;
@@ -149,9 +266,8 @@ int run_leakage_scenarios (FILE *fp,
   A_DECL (char *, outname);
 
   A_INIT (outname);
-  
-  printf ("Analyzing leakage for %s (sh=%d)\n", p->getName(), sh ? 1 : 0);
 
+  printf ("Analyzing leakage for %s\n", p->getName());
   
   nl = np->getNL (p);
 
@@ -171,14 +287,6 @@ int run_leakage_scenarios (FILE *fp,
     fclose (sfp);
     return 0;
   }
-
-  if (sh) {
-    /* -- analyze state-holding operator -- */
-
-
-  }
-
-  
 
   double vdd = config_get_real ("xcell.Vdd");
   double period = config_get_real ("xcell.period");
@@ -215,7 +323,6 @@ int run_leakage_scenarios (FILE *fp,
   fprintf (sfp, "\n");
 
   /* -- measurement of current -- */
-
   int tm = 1;
   double lk_window = config_get_real ("xcell.leak_window");
   if (period / (2 * lk_window) < 2) {
@@ -244,6 +351,7 @@ int run_leakage_scenarios (FILE *fp,
   for (int i=0; i < A_LEN (nl->bN->ports); i++) {
     if (nl->bN->ports[i].omit) continue;
     if (nl->bN->ports[i].input) continue;
+
     ActId *tmp;
     char buf[1024];
     tmp = nl->bN->ports[i].c->toid();
@@ -265,6 +373,28 @@ int run_leakage_scenarios (FILE *fp,
   }
 
   /*-- we also need internal nodes for stateholding gates --*/
+  for (int i=0; i < A_LEN (_sh_vars); i++) {
+    if (_sh_vars[i]->isport) continue;
+
+    ActId *tmp;
+    char buf[1024];
+    tmp = _sh_vars[i]->id->toid();
+    tmp->sPrint (buf, 1024);
+    delete tmp;
+    fprintf (sfp, " V(xtst%s", config_get_string ("net.spice_path_sep"));
+    a->mfprintf (sfp, "%s", buf);
+    fprintf (sfp, ") ");
+
+    snprintf (bufout, 1024, "xtst.");
+    a->msnprintf (bufout + strlen (bufout), 1024 - strlen (bufout),
+		  "%s", buf);
+    for (int i=0; bufout[i]; i++) {
+      bufout[i] = tolower(bufout[i]);
+    }
+    A_NEWM (outname, char *);
+    A_NEXT (outname) = Strdup (bufout);
+    A_INC (outname);
+  }
   
   fprintf (sfp, "\n");
 	 
@@ -279,11 +409,103 @@ int run_leakage_scenarios (FILE *fp,
 
   /* -- extract results from spice run -- */
 
+  /* -- convert trace file to atrace format -- */
+  if (config_get_int ("xcell.spice_output_fmt") == 0) {
+    /* raw */
+    snprintf (buf, 1024, "tr2alint -r _spicelk_.spi.raw _spicelk_");
+  }
+  else {
+    snprintf (buf, 1024, "tr2alint _spicelk_.spi.tr0 _spicelk_");
+  }
+  system (buf);
+
+  /* 
+     Step 1: truth tables
+  */
+  snprintf (buf, 1024, "_spicelk_");
+  atrace *tr = atrace_open (buf);
+  if (!tr) {
+    fatal_error ("Could not open simulation trace file!");
+  }
+  name_t *timenode;
+  A_DECL (name_t *, outnode);
+  A_INIT (outnode);
+  
+  snprintf (buf, 1024, "time");
+  timenode = atrace_lookup (tr, buf);
+  if (!timenode) {
+    printf ("Time not found?\n");
+  }
+
+  for (int i=0; i < A_LEN (outname); i++) {
+    A_NEWM (outnode, name_t *);
+    A_NEXT (outnode) = atrace_lookup (tr, outname[i]);
+    if (!A_NEXT (outnode)) {
+      printf ("Output node `%s' not found", outname[i]);
+    }
+    else {
+      A_INC (outnode);
+    }
+  }
+
+  for (int i=0; i < A_LEN (outname); i++) {
+    FREE (outname[i]);
+  }
+  
+  if (A_LEN (outnode) != A_LEN (outname) || !timenode) {
+    A_FREE (outnode);
+    A_FREE (outname);
+    atrace_close (tr);
+    A_FREE (_sh_vars);
+    return 0;
+  }
+  
+  A_FREE (outname);
+
+  int nnodes, nsteps, fmt, ts;
+  if (atrace_header (tr, &ts, &nnodes, &nsteps, &fmt)) {
+    fatal_error ("Trace file header corrupted?");
+  }
+
+  printf ("%d nodes, %d steps\n", nnodes, nsteps);
+
+  /* -- get values -- */
+  tm = 1;
+  atrace_init_time (tr);
+  atrace_advance_time (tr, period*1e-12/ATRACE_GET_STEPSIZE (tr));
+
+  float vhigh, vlow;
+
+  vhigh = config_get_real ("lint.V_high");
+  vlow = config_get_real ("lint.V_low");
+  
+  for (int i=0; i < (1 << num_inputs); i++) {
+    float val;
+    
+    atrace_advance_time (tr, (period-1000)*1e-12/ATRACE_GET_STEPSIZE (tr));
+
+    for (int j=0; j < A_LEN (outnode); j++) {
+      val = ATRACE_NODE_VAL (tr, outnode[j]);
+
+      if (val >= vhigh) {
+	printf ("out[%d]: H @ %g\n", j, ATRACE_NODE_VAL (tr, timenode));
+      }
+      else if (val <= vlow) {
+	printf ("out[%d]: L @ %g\n", j, ATRACE_NODE_VAL (tr, timenode));
+      }
+      else {
+	printf ("out[%d]: X (%g) @ %g\n", j, val, ATRACE_NODE_VAL (tr, timenode));
+      }
+    }
+    atrace_advance_time (tr, 1000e-12/ATRACE_GET_STEPSIZE (tr));
+  }
+
+  atrace_close (tr);
+  
 
   /*
-    Step 1: measurements
+    Step 2: leakage measurements
   */
-
   sfp = fopen ("_spicelk_.spi.mt0", "r");
   if (!sfp) {
     fatal_error ("Could not open measurement output from Xyce\n");
@@ -341,97 +563,6 @@ int run_leakage_scenarios (FILE *fp,
   }
   fclose (sfp);
 
-  /* -- convert trace file to atrace format -- */
-  if (config_get_int ("xcell.spice_output_fmt") == 0) {
-    /* raw */
-    snprintf (buf, 1024, "tr2alint -r _spicelk_.spi.raw _spicelk_");
-  }
-  else {
-    snprintf (buf, 1024, "tr2alint _spicelk_.spi.tr0 _spicelk_");
-  }
-  system (buf);
-
-  /* 
-     Step 2: truth tables
-  */
-  snprintf (buf, 1024, "_spicelk_");
-  atrace *tr = atrace_open (buf);
-  if (!tr) {
-    fatal_error ("Could not open simulation trace file!");
-  }
-  name_t *timenode;
-  A_DECL (name_t *, outnode);
-  A_INIT (outnode);
-  
-  snprintf (buf, 1024, "time");
-  timenode = atrace_lookup (tr, buf);
-  if (!timenode) {
-    printf ("Time not found?\n");
-  }
-
-  for (int i=0; i < A_LEN (outname); i++) {
-    A_NEWM (outnode, name_t *);
-    A_NEXT (outnode) = atrace_lookup (tr, outname[i]);
-    if (!A_NEXT (outnode)) {
-      printf ("Output node `%s' not found", outname[i]);
-    }
-    else {
-      A_INC (outnode);
-    }
-  }
-
-  for (int i=0; i < A_LEN (outname); i++) {
-    FREE (outname[i]);
-  }
-  
-  if (A_LEN (outnode) != A_LEN (outname) || !timenode) {
-    A_FREE (outnode);
-    A_FREE (outname);
-    atrace_close (tr);
-    return 0;
-  }
-  
-  A_FREE (outname);
-
-  int nnodes, nsteps, fmt, ts;
-  if (atrace_header (tr, &ts, &nnodes, &nsteps, &fmt)) {
-    fatal_error ("Trace file header corrupted?");
-  }
-
-  printf ("%d nodes, %d steps\n", nnodes, nsteps);
-
-  /* -- get values -- */
-  tm = 1;
-  atrace_init_time (tr);
-  atrace_advance_time (tr, period*1e-12/ATRACE_GET_STEPSIZE (tr));
-
-  float vhigh, vlow;
-
-  vhigh = config_get_real ("lint.V_high");
-  vlow = config_get_real ("lint.V_low");
-  
-  for (int i=0; i < (1 << num_inputs); i++) {
-    float val;
-    
-    atrace_advance_time (tr, (period-1000)*1e-12/ATRACE_GET_STEPSIZE (tr));
-
-    for (int j=0; j < A_LEN (outnode); j++) {
-      val = ATRACE_NODE_VAL (tr, outnode[j]);
-
-      if (val >= vhigh) {
-	printf ("out[%d]: H @ %g\n", j, ATRACE_NODE_VAL (tr, timenode));
-      }
-      else if (val <= vlow) {
-	printf ("out[%d]: L @ %g\n", j, ATRACE_NODE_VAL (tr, timenode));
-      }
-      else {
-	printf ("out[%d]: X (%g) @ %g\n", j, val, ATRACE_NODE_VAL (tr, timenode));
-      }
-    }
-    atrace_advance_time (tr, 1000e-12/ATRACE_GET_STEPSIZE (tr));
-  }
-
-  atrace_close (tr);
 
 #if 1
   unlink ("_spicelk_.spi");
@@ -511,8 +642,25 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
     }
   }
 
+  if (is_stateholding) {
+    /* -- analyze state-holding operator -- */
+    Assert (is_stateholding->v, "What?");
+    A_INIT (_sh_vars);
+    _collect_support (nl, is_stateholding->v->e_up);
+    _collect_support (nl, is_stateholding->v->e_dn);
+    Assert (A_LEN (_sh_vars) > 0, "What?!");
+
+    _tt[0] = bitset_new (1 << A_LEN (_sh_vars));
+    _tt[1] = bitset_new (1 << A_LEN (_sh_vars));
+    bitset_clear (_tt[0]);
+    bitset_clear (_tt[1]);
+    
+    _build_truth_table (nl, is_stateholding->v->e_up, 1);
+    _build_truth_table (nl, is_stateholding->v->e_dn, 0);
+  }
+
   /* -- add leakage information to the .lib file -- */
-  if (!run_leakage_scenarios (lfp, a, np, p, is_stateholding)) {
+  if (!run_leakage_scenarios (lfp, a, np, p)) {
     return 0;
   }
 
@@ -525,6 +673,11 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
 
   /* -- dynamic scenarios -- */
   
+  if (A_LEN (_sh_vars) > 0) {
+    bitset_free (_tt[0]);
+    bitset_free (_tt[1]);
+  }
+  A_FREE (_sh_vars);
 
   return 1;
   

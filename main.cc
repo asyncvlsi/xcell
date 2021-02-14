@@ -167,6 +167,7 @@ int run_leakage_scenarios (FILE *fp,
   }
 
   double vdd = config_get_real ("xcell.Vdd");
+  double period = config_get_real ("xcell.period");
 
   /* -- leakage scenarios -- */
   
@@ -187,10 +188,10 @@ int run_leakage_scenarios (FILE *fp,
     int tm = 1;
     for (int i=0; i < (1 << num_inputs); i++) {
       if ((i >> k) & 0x1) {
-	fprintf (sfp, "+%dp %g %dp %g\n", tm*10000 + 1, vdd, (tm+1)*10000, vdd);
+	fprintf (sfp, "+%gp %g %gp %g\n", tm*period + 1, vdd, (tm+1)*period, vdd);
       }
       else {
-	fprintf (sfp, "+%dp 0 %dp 0\n", tm*10000 + 1, (tm+1)*10000);
+	fprintf (sfp, "+%gp 0 %gp 0\n", tm*period + 1, (tm+1)*period);
       }
       tm ++;
     }
@@ -203,14 +204,14 @@ int run_leakage_scenarios (FILE *fp,
 
   int tm = 1;
   for (int i=0; i < (1 << num_inputs); i++) {
-    fprintf (sfp, ".measure tran current_%d avg i(Vv1) from %dp to %dp\n",
-	     i, tm*10000 + 1000, (tm+1)*10000 - 1000);
+    fprintf (sfp, ".measure tran current_%d avg i(Vv1) from %gp to %gp\n",
+	     i, tm*period + 1000, (tm+1)*period - 1000);
     fprintf (sfp, ".measure tran leak_%d PARAM='-current_%d*%g'\n", i, i,
 	     vdd);
     tm++;
   }
 
-  fprintf (sfp, ".tran 10p %dp\n", tm*10000);
+  fprintf (sfp, ".tran 10p %gp\n", tm*period);
   /*fprintf (fp, ".option post\n");*/
   if (config_exists ("xcell.extra_sp_txt")) {
     char **x = config_get_table_string ("xcell.extra_sp_txt");
@@ -360,7 +361,7 @@ int run_leakage_scenarios (FILE *fp,
   /* -- get values -- */
   tm = 1;
   atrace_init_time (tr);
-  atrace_advance_time (tr, 10000e-12/ATRACE_GET_STEPSIZE (tr));
+  atrace_advance_time (tr, period*1e-12/ATRACE_GET_STEPSIZE (tr));
 
   float vhigh, vlow;
 
@@ -370,7 +371,7 @@ int run_leakage_scenarios (FILE *fp,
   for (int i=0; i < (1 << num_inputs); i++) {
     float val;
     
-    atrace_advance_time (tr, 5000e-12/ATRACE_GET_STEPSIZE (tr));
+    atrace_advance_time (tr, (period-1000)*1e-12/ATRACE_GET_STEPSIZE (tr));
     
     val = ATRACE_NODE_VAL (tr, outnode);
 
@@ -383,14 +384,12 @@ int run_leakage_scenarios (FILE *fp,
     else {
       printf ("out: X (%g) @ %g\n", val, ATRACE_NODE_VAL (tr, timenode));
     }
-
-    atrace_advance_time (tr, 5000e-12/ATRACE_GET_STEPSIZE (tr));
-    
+    atrace_advance_time (tr, 1000e-12/ATRACE_GET_STEPSIZE (tr));
   }
 
   atrace_close (tr);
 
-#if 0
+#if 1
   unlink ("_spicelk_.spi");
   unlink ("_spicelk_.spi.mt0");
   unlink ("_spicelk_.spi.raw");

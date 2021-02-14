@@ -497,8 +497,8 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
     if (n->v) {
       if (n->v->e_up || n->v->e_dn) {
 	/* there's a gate here */
-	if (n->v->stateholding &&
-	    (!n->v->unstaticized || n->v->manualkeeper != 0)) {
+	if ((n->v->stateholding && !n->v->unstaticized)
+	    || n->v->manualkeeper != 0) {
 	  if (!is_stateholding) {
 	    is_stateholding = n;
 	  }

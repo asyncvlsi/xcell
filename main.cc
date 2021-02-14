@@ -135,6 +135,8 @@ int get_num_inputs (netlist_t *nl)
 
 L_A_DECL (act_booleanized_var_t *, _sh_vars);
 static bitset_t *_tt[2];
+static bitset_t **_outvals; 	// value of outputs + _sh_vars
+static int _num_outputs;
 
 void _add_support_var (netlist_t *nl, ActId *id)
 {
@@ -338,7 +340,6 @@ int run_leakage_scenarios (FILE *fp,
   }
 
   fprintf (sfp, ".tran 10p %gp\n", tm*period);
-  /*fprintf (fp, ".option post\n");*/
   if (config_exists ("xcell.extra_sp_txt")) {
     char **x = config_get_table_string ("xcell.extra_sp_txt");
     for (int i=0; i < config_get_table_size ("xcell.extra_sp_txt"); i++) {
@@ -348,6 +349,8 @@ int run_leakage_scenarios (FILE *fp,
   fprintf (sfp, ".print tran %s", config_get_string ("xcell.extra_print_stmt"));
   /* print voltages */
   char bufout[1024];
+
+  int num_outputs;
   for (int i=0; i < A_LEN (nl->bN->ports); i++) {
     if (nl->bN->ports[i].omit) continue;
     if (nl->bN->ports[i].input) continue;
@@ -371,6 +374,8 @@ int run_leakage_scenarios (FILE *fp,
     A_NEXT (outname) = Strdup (bufout);
     A_INC (outname);
   }
+  num_outputs = A_LEN (outname);
+  _num_outputs = num_outputs;
 
   /*-- we also need internal nodes for stateholding gates --*/
   for (int i=0; i < A_LEN (_sh_vars); i++) {
@@ -403,6 +408,7 @@ int run_leakage_scenarios (FILE *fp,
   fclose (sfp);
   
   /* -- run the spice simulation -- */
+  
   snprintf (buf, 1024, "%s _spicelk_.spi > _spicelk_.log 2>&1",
 	    config_get_string ("xcell.spice_binary"));
   system (buf);
@@ -467,7 +473,7 @@ int run_leakage_scenarios (FILE *fp,
     fatal_error ("Trace file header corrupted?");
   }
 
-  printf ("%d nodes, %d steps\n", nnodes, nsteps);
+  //printf ("%d nodes, %d steps\n", nnodes, nsteps);
 
   /* -- get values -- */
   tm = 1;
@@ -478,6 +484,11 @@ int run_leakage_scenarios (FILE *fp,
 
   vhigh = config_get_real ("lint.V_high");
   vlow = config_get_real ("lint.V_low");
+
+  MALLOC (_outvals, bitset_t *, A_LEN (outnode));
+  for (int i=0; i < A_LEN (outnode); i++) {
+    _outvals[i] = bitset_new (1 << num_inputs);
+  }
   
   for (int i=0; i < (1 << num_inputs); i++) {
     float val;
@@ -488,20 +499,23 @@ int run_leakage_scenarios (FILE *fp,
       val = ATRACE_NODE_VAL (tr, outnode[j]);
 
       if (val >= vhigh) {
-	printf ("out[%d]: H @ %g\n", j, ATRACE_NODE_VAL (tr, timenode));
+	bitset_set (_outvals[j], i);
+	//printf ("out[%d]: H @ %g\n", j, ATRACE_NODE_VAL (tr, timenode));
       }
       else if (val <= vlow) {
-	printf ("out[%d]: L @ %g\n", j, ATRACE_NODE_VAL (tr, timenode));
+	bitset_clr (_outvals[j], i);
+	//printf ("out[%d]: L @ %g\n", j, ATRACE_NODE_VAL (tr, timenode));
       }
       else {
-	printf ("out[%d]: X (%g) @ %g\n", j, val, ATRACE_NODE_VAL (tr, timenode));
+	if (j >= num_outputs) {
+	  warning ("out[%d]: X (%g) @ %g\n", j, val, ATRACE_NODE_VAL (tr, timenode));
+	}
       }
     }
     atrace_advance_time (tr, 1000e-12/ATRACE_GET_STEPSIZE (tr));
   }
 
   atrace_close (tr);
-  
 
   /*
     Step 2: leakage measurements
@@ -526,6 +540,16 @@ int run_leakage_scenarios (FILE *fp,
       if (sscanf (s, "%lg", &lk) != 1) {
 	fatal_error ("Could not parse line: %s", buf);
       }
+
+      /*-- XXX: now check for interference --*/
+
+      /*
+	Primary inputs are set by "i"
+	Secondary inputs are set by bitset outval[.]
+      */
+
+      /* XXX: HERE */
+      
       NLFP (fp, "leakage_power() {\n");
       tab();
       NLFP (fp, "when : \"");
@@ -541,6 +565,7 @@ int run_leakage_scenarios (FILE *fp,
 	  }
 	  pos--;
 	}
+
 	ActId *tmp;
 	tmp = nl->bN->ports[pos].c->toid();
 	tmp->sPrint (buf, 1024);
@@ -562,7 +587,6 @@ int run_leakage_scenarios (FILE *fp,
     }
   }
   fclose (sfp);
-
 
 #if 1
   unlink ("_spicelk_.spi");
@@ -672,6 +696,17 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
   printf ("%s stateholding: %d\n", p->getName(), is_stateholding ? 1 : 0);
 
   /* -- dynamic scenarios -- */
+  
+  for (int i=0; i < _num_outputs; i++) {
+    bitset_free (_outvals[i]);
+  }
+  int x = _num_outputs;
+  for (int i=0; i < A_LEN (_sh_vars); i++) {
+    if (_sh_vars[i]->isport) continue;
+    bitset_free (_outvals[x]);
+    x++;
+  }
+  FREE (_outvals);
   
   if (A_LEN (_sh_vars) > 0) {
     bitset_free (_tt[0]);

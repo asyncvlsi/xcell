@@ -52,6 +52,9 @@ void untab (void)
 int gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
 {
   netlist_t *nl;
+  A_DECL (int, xout);
+
+  A_INIT (xout);
 
   fprintf (fp, "**************************\n");
   fprintf (fp, "** characterization run **\n");
@@ -78,24 +81,19 @@ int gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
   nl = np->getNL (p);
   
   fprintf (fp, "xtst ");
-  int idx_out = -1;
   for (int i=0; i < A_LEN (nl->bN->ports); i++) {
     if (nl->bN->ports[i].omit) continue;
     if (!nl->bN->ports[i].input) {
-      if (idx_out == -1) {
-	idx_out = i;
-      }
-      else {
-	warning ("Extend to multi-output gates!");
-	return 0;
-      }
+      A_NEWM (xout, int);
+      A_NEXT (xout) = i;
+      A_INC (xout);
     }
     fprintf (fp, "p%d ", i);
   }
   a->mfprintfproc (fp, p);
   fprintf (fp, "\n");
 
-  if (idx_out == -1) {
+  if (A_LEN (xout) == 0) {
     warning ("Cell %s: no outputs?\n", p->getName());
     return 0;
   }
@@ -105,7 +103,10 @@ int gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
   fprintf (fp, "Vv1 Vdd 0 %g\n", config_get_real ("xcell.Vdd"));
 
   /*-- load cap on output that is swept --*/
-  fprintf (fp, "Clc p%d 0 load\n\n", idx_out);
+  for (int i=0; i < A_LEN (xout); i++) {
+    fprintf (fp, "Clc%d p%d 0 load\n\n", i, xout[i]);
+  }
+  A_FREE (xout);
 
   return 1;
 }
@@ -138,15 +139,20 @@ int get_num_inputs (netlist_t *nl)
  *
  */
 int run_leakage_scenarios (FILE *fp,
-			   Act *a, ActNetlistPass *np, Process *p)
+			   Act *a, ActNetlistPass *np, Process *p,
+			   node_t *sh)
 {
   FILE *sfp;
   netlist_t *nl;
   int num_inputs;
   char buf[1024];
+  A_DECL (char *, outname);
 
-  printf ("Analyzing leakage for %s\n", p->getName());
+  A_INIT (outname);
+  
+  printf ("Analyzing leakage for %s (sh=%d)\n", p->getName(), sh ? 1 : 0);
 
+  
   nl = np->getNL (p);
 
   num_inputs = get_num_inputs (nl);
@@ -165,6 +171,14 @@ int run_leakage_scenarios (FILE *fp,
     fclose (sfp);
     return 0;
   }
+
+  if (sh) {
+    /* -- analyze state-holding operator -- */
+
+
+  }
+
+  
 
   double vdd = config_get_real ("xcell.Vdd");
   double period = config_get_real ("xcell.period");
@@ -203,9 +217,14 @@ int run_leakage_scenarios (FILE *fp,
   /* -- measurement of current -- */
 
   int tm = 1;
+  double lk_window = config_get_real ("xcell.leak_window");
+  if (period / (2 * lk_window) < 2) {
+    fatal_error ("leak_window parameter (%g) is too large for period (%g)\n",
+		 lk_window, period);
+  }
   for (int i=0; i < (1 << num_inputs); i++) {
     fprintf (sfp, ".measure tran current_%d avg i(Vv1) from %gp to %gp\n",
-	     i, tm*period + 1000, (tm+1)*period - 1000);
+	     i, tm*period + lk_window, (tm+1)*period - lk_window);
     fprintf (sfp, ".measure tran leak_%d PARAM='-current_%d*%g'\n", i, i,
 	     vdd);
     tm++;
@@ -230,7 +249,7 @@ int run_leakage_scenarios (FILE *fp,
     tmp = nl->bN->ports[i].c->toid();
     tmp->sPrint (buf, 1024);
     delete tmp;
-    fprintf (sfp, "V(xtst%s", config_get_string ("net.spice_path_sep"));
+    fprintf (sfp, " V(xtst%s", config_get_string ("net.spice_path_sep"));
     a->mfprintf (sfp, "%s", buf);
     fprintf (sfp, ") ");
 
@@ -240,7 +259,13 @@ int run_leakage_scenarios (FILE *fp,
     for (int i=0; bufout[i]; i++) {
       bufout[i] = tolower(bufout[i]);
     }
+    A_NEWM (outname, char *);
+    A_NEXT (outname) = Strdup (bufout);
+    A_INC (outname);
   }
+
+  /*-- we also need internal nodes for stateholding gates --*/
+  
   fprintf (sfp, "\n");
 	 
   fprintf (sfp, ".end\n");
@@ -334,26 +359,43 @@ int run_leakage_scenarios (FILE *fp,
   if (!tr) {
     fatal_error ("Could not open simulation trace file!");
   }
-  name_t *timenode, *outnode;
+  name_t *timenode;
+  A_DECL (name_t *, outnode);
+  A_INIT (outnode);
+  
   snprintf (buf, 1024, "time");
   timenode = atrace_lookup (tr, buf);
   if (!timenode) {
     printf ("Time not found?\n");
   }
 
-  outnode = atrace_lookup (tr, bufout);
-  if (!outnode) {
-    printf ("Output node `%s' not found", bufout);
+  for (int i=0; i < A_LEN (outname); i++) {
+    A_NEWM (outnode, name_t *);
+    A_NEXT (outnode) = atrace_lookup (tr, outname[i]);
+    if (!A_NEXT (outnode)) {
+      printf ("Output node `%s' not found", outname[i]);
+    }
+    else {
+      A_INC (outnode);
+    }
   }
+
+  for (int i=0; i < A_LEN (outname); i++) {
+    FREE (outname[i]);
+  }
+  
+  if (A_LEN (outnode) != A_LEN (outname) || !timenode) {
+    A_FREE (outnode);
+    A_FREE (outname);
+    atrace_close (tr);
+    return 0;
+  }
+  
+  A_FREE (outname);
 
   int nnodes, nsteps, fmt, ts;
   if (atrace_header (tr, &ts, &nnodes, &nsteps, &fmt)) {
     fatal_error ("Trace file header corrupted?");
-  }
-
-  if (!outnode || !timenode) {
-    atrace_close (tr);
-    return 0;
   }
 
   printf ("%d nodes, %d steps\n", nnodes, nsteps);
@@ -372,17 +414,19 @@ int run_leakage_scenarios (FILE *fp,
     float val;
     
     atrace_advance_time (tr, (period-1000)*1e-12/ATRACE_GET_STEPSIZE (tr));
-    
-    val = ATRACE_NODE_VAL (tr, outnode);
 
-    if (val >= vhigh) {
-      printf ("out: H @ %g\n", ATRACE_NODE_VAL (tr, timenode));
-    }
-    else if (val <= vlow) {
-      printf ("out: L @ %g\n", ATRACE_NODE_VAL (tr, timenode));
-    }
-    else {
-      printf ("out: X (%g) @ %g\n", val, ATRACE_NODE_VAL (tr, timenode));
+    for (int j=0; j < A_LEN (outnode); j++) {
+      val = ATRACE_NODE_VAL (tr, outnode[j]);
+
+      if (val >= vhigh) {
+	printf ("out[%d]: H @ %g\n", j, ATRACE_NODE_VAL (tr, timenode));
+      }
+      else if (val <= vlow) {
+	printf ("out[%d]: L @ %g\n", j, ATRACE_NODE_VAL (tr, timenode));
+      }
+      else {
+	printf ("out[%d]: X (%g) @ %g\n", j, val, ATRACE_NODE_VAL (tr, timenode));
+      }
     }
     atrace_advance_time (tr, 1000e-12/ATRACE_GET_STEPSIZE (tr));
   }
@@ -398,6 +442,8 @@ int run_leakage_scenarios (FILE *fp,
   unlink ("_spicelk_.trace");
   unlink ("_spicelk_.names");
 #endif
+
+  A_FREE (outnode);
   
   return 1;
 }
@@ -444,7 +490,7 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
 {
   FILE *fp;
   netlist_t *nl;
-  int is_stateholding = 0;
+  node_t *is_stateholding = NULL;
 
   nl = np->getNL (p);
   for (node_t *n = nl->hd; n; n = n->next) {
@@ -453,15 +499,20 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
 	/* there's a gate here */
 	if (n->v->stateholding &&
 	    (!n->v->unstaticized || n->v->manualkeeper != 0)) {
-	  is_stateholding++;
-	  break;
+	  if (!is_stateholding) {
+	    is_stateholding = n;
+	  }
+	  else {
+	    warning ("Analysis does not work for cells with multiple state-holding gates");
+	    return 0;
+	  }
 	}
       }
     }
   }
 
   /* -- add leakage information to the .lib file -- */
-  if (!run_leakage_scenarios (lfp, a, np, p)) {
+  if (!run_leakage_scenarios (lfp, a, np, p, is_stateholding)) {
     return 0;
   }
 
@@ -470,13 +521,10 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
 	  - output value
   */
 
-  printf ("%s stateholding: %d\n", p->getName(), is_stateholding);
+  printf ("%s stateholding: %d\n", p->getName(), is_stateholding ? 1 : 0);
 
   /* -- dynamic scenarios -- */
-  if (is_stateholding > 1) {
-    warning ("Cannot handle modules with more than one state-holding gate at present.");
-    return 0;
-  }
+  
 
   return 1;
   

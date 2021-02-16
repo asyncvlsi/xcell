@@ -21,6 +21,7 @@
  */
 #include <stdio.h>
 #include <unistd.h>
+#include <math.h>
 #include <config.h>
 #include <atrace.h>
 #include <act/act.h>
@@ -70,6 +71,8 @@ int gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
   fprintf (fp, ".param resistor = %g%s\n\n",
 	   config_get_real ("xcell.R_value"),
 	   config_get_string ("xcell.units.resis"));
+
+  fprintf (fp, ".temp %g\n", config_get_real ("xcell.T") - 273.15);
 
   /*-- dump subcircuit --*/
   np->Print (fp, p);
@@ -137,6 +140,8 @@ L_A_DECL (act_booleanized_var_t *, _sh_vars);
 static bitset_t *_tt[2];
 static bitset_t **_outvals; 	// value of outputs + _sh_vars
 static int _num_outputs;
+
+static bitset_t *_forbidden;	// forbidden port input scenarios
 
 void _add_support_var (netlist_t *nl, ActId *id)
 {
@@ -253,13 +258,105 @@ void _build_truth_table (netlist_t *nl, act_prs_expr_t *e, int idx)
   }
 }
 
+
+void print_all_input_cases (FILE *sfp,
+			    const char *prefix,
+			    int num_inputs, netlist_t *nl)
+{
+  double vdd = config_get_real ("xcell.Vdd");
+  double period = config_get_real ("xcell.period");
+
+  /* -- leakage scenarios -- */
+  
+  for (int k=0; k < num_inputs; k++) {
+    fprintf (sfp, "Vn%d %s%d 0 PWL (0p 0 1000p 0\n", k, prefix, k);
+    int tm = 1;
+    for (int i=0; i < (1 << num_inputs); i++) {
+      if ((i >> k) & 0x1) {
+	fprintf (sfp, "+%gp %g %gp %g\n", tm*period + 1, vdd, (tm+1)*period, vdd);
+      }
+      else {
+	fprintf (sfp, "+%gp 0 %gp 0\n", tm*period + 1, (tm+1)*period);
+      }
+      tm ++;
+    }
+    fprintf (sfp, "+)\n\n");
+  }
+}
+
+
+void print_input_cap_cases (FILE *sfp,
+			    const char *prefix,
+			    int num_inputs, netlist_t *nl)
+{
+  double vdd = config_get_real ("xcell.Vdd");
+  double period = config_get_real ("xcell.period");
+  double window = config_get_real ("xcell.cap_window");
+
+  for (int i=0; i < num_inputs; i++) {
+
+    fprintf (sfp, "Vn%d %s%d 0 PWL (0p 0 1000p 0\n", i, prefix, i);
+    
+    /*-- we run input i up and down 2 times, with the others being in
+      all possible different states --*/
+    int tm = 1;
+
+    /* prefix: just go through all possible cases */
+    for (int p=0; p < i; p++) {
+      for (int q=0; q < (1 << (num_inputs-1)); q++) {
+	if ((q >> (i-1)) & 1) {
+	  fprintf (sfp, "+%gp %g %gp %g\n", tm*period + 1, vdd, (tm+1)*period, vdd);
+	}
+	else {
+	  fprintf (sfp, "+%gp 0 %gp 0\n", tm*period + 1, (tm+1)*period);
+	}
+	tm++;
+      }
+    }
+
+    /* -- now it is my turn -- */
+    for (int q=0; q < (1 << (num_inputs-1)); q++) {
+      double offset = tm*period;
+      fprintf (sfp, "+%gp %g %gp %g\n", offset + 1, 0.0, offset + window, 0.0);
+      offset += window;
+      fprintf (sfp, "+%gp %g %gp %g\n", offset + 1, vdd, offset + window, vdd);
+      offset += window;
+      fprintf (sfp, "+%gp %g %gp %g\n", offset + 1, 0.0, offset + window, 0.0);
+      offset += window;
+      fprintf (sfp, "+%gp %g %gp %g\n", offset + 1, vdd, offset + window, vdd);
+      offset += window;
+      fprintf (sfp, "+%gp %g %gp %g\n", offset + 1, 0.0, offset + window, 0.0);
+      offset += window;
+      tm++;
+      if (offset >= tm*period) {
+	warning ("Period (%g) needs to be >= cap_window (%g)*5\n", period, window);
+      }
+    }
+
+    /* -- now rest -- */
+    for (int p=i+1; p < num_inputs; p++) {
+      for (int q=0; q < (1 << (num_inputs-1)); q++) {
+	if ((q >> i) & 1) {
+	  fprintf (sfp, "+%gp %g %gp %g\n", tm*period + 1, vdd, (tm+1)*period, vdd);
+	}
+	else {
+	  fprintf (sfp, "+%gp 0 %gp 0\n", tm*period + 1, (tm+1)*period);
+	}
+	tm++;
+      }
+    }
+  }
+}
+
+
 /*
  *
  *  Create a testbench to generate all the leakage scenarios
  *
  */
 int run_leakage_scenarios (FILE *fp,
-			   Act *a, ActNetlistPass *np, Process *p)
+			   Act *a, ActNetlistPass *np, Process *p,
+			   node_t *is_stateholding)
 {
   FILE *sfp;
   netlist_t *nl;
@@ -269,8 +366,6 @@ int run_leakage_scenarios (FILE *fp,
 
   A_INIT (outname);
 
-  printf ("Analyzing leakage for %s\n", p->getName());
-  
   nl = np->getNL (p);
 
   num_inputs = get_num_inputs (nl);
@@ -290,40 +385,13 @@ int run_leakage_scenarios (FILE *fp,
     return 0;
   }
 
-  double vdd = config_get_real ("xcell.Vdd");
-  double period = config_get_real ("xcell.period");
-
-  /* -- leakage scenarios -- */
-  
-  for (int k=0; k < num_inputs; k++) {
-    int pos;
-    pos = k;
-    for (int j=0; j < A_LEN (nl->bN->ports); j++) {
-      if (nl->bN->ports[j].omit) continue;
-      if (!nl->bN->ports[j].input) continue;
-      if (pos == 0) {
-	pos = j;
-	break;
-      }
-      pos--;
-    }
-
-    fprintf (sfp, "Vn%d p%d 0 PWL (0p 0 1000p 0\n", k, pos);
-    int tm = 1;
-    for (int i=0; i < (1 << num_inputs); i++) {
-      if ((i >> k) & 0x1) {
-	fprintf (sfp, "+%gp %g %gp %g\n", tm*period + 1, vdd, (tm+1)*period, vdd);
-      }
-      else {
-	fprintf (sfp, "+%gp 0 %gp 0\n", tm*period + 1, (tm+1)*period);
-      }
-      tm ++;
-    }
-    fprintf (sfp, "+)\n\n");
-  }
-
+  /* -- generate all possible static input scenarios -- */
+  print_all_input_cases (sfp, "p", num_inputs, nl);
   fprintf (sfp, "\n");
 
+  double period = config_get_real ("xcell.period");
+  double vdd = config_get_real ("xcell.Vdd");
+  
   /* -- measurement of current -- */
   int tm = 1;
   double lk_window = config_get_real ("xcell.leak_window");
@@ -421,7 +489,7 @@ int run_leakage_scenarios (FILE *fp,
     snprintf (buf, 1024, "tr2alint -r _spicelk_.spi.raw _spicelk_");
   }
   else {
-    snprintf (buf, 1024, "tr2alint _spicelk_.spi.tr0 _spicelk_");
+    snprintf (buf, 1024, "tr2alint _spicelk_.tr0 _spicelk_");
   }
   system (buf);
 
@@ -508,7 +576,7 @@ int run_leakage_scenarios (FILE *fp,
       }
       else {
 	if (j >= num_outputs) {
-	  warning ("out[%d]: X (%g) @ %g\n", j, val, ATRACE_NODE_VAL (tr, timenode));
+	  warning ("%s: out[%d]: X (%g) @ %g\n", p->getName(), j, val, ATRACE_NODE_VAL (tr, timenode));
 	}
       }
     }
@@ -517,12 +585,23 @@ int run_leakage_scenarios (FILE *fp,
 
   atrace_close (tr);
 
+  if (is_stateholding) {
+    _forbidden = bitset_new (num_inputs);
+    bitset_clear (_forbidden);
+  }
+  else {
+    _forbidden = NULL;
+  }
+
   /*
     Step 2: leakage measurements
   */
   sfp = fopen ("_spicelk_.spi.mt0", "r");
   if (!sfp) {
-    fatal_error ("Could not open measurement output from Xyce\n");
+    sfp = fopen ("_spicelk_.mt0", "r");
+    if (!sfp) {
+      fatal_error ("Could not open measurement output file.\n");
+    }
   }
   while (fgets (buf, 1024, sfp)) {
     double lk;
@@ -541,14 +620,69 @@ int run_leakage_scenarios (FILE *fp,
 	fatal_error ("Could not parse line: %s", buf);
       }
 
-      /*-- XXX: now check for interference --*/
+      if (lk < 0) {
+	warning ("%s: measurement failed for leakage, scenario %d (%g)",
+		 p->getName(), i, lk);
+      }
 
-      /*
+      /*-- now check for interference --*/
+
+      /*--
 	Primary inputs are set by "i"
-	Secondary inputs are set by bitset outval[.]
-      */
+	Secondary inputs are set by bitset outval[...]
+      --*/
 
-      /* XXX: HERE */
+      unsigned int val = 0;
+      int loc = _num_outputs;
+
+      /* -- compute variable assignment -- */
+      for (int k=0; k < A_LEN (_sh_vars); k++) {
+	/* search in port list */
+	if (_sh_vars[k]->isport) {
+	  int j;
+	  int pos = 0;
+	  int opos = 0;
+	  for (j=0; j < A_LEN (nl->bN->ports); j++) {
+	    if (nl->bN->ports[j].omit) continue;
+	    if (nl->bN->ports[j].c == _sh_vars[k]->id) {
+	      break;
+	    }
+	    if (nl->bN->ports[j].input) {
+	      pos++;
+	    }
+	    else {
+	      opos++;
+	    }
+	  }
+	  Assert (j != A_LEN (nl->bN->ports), "What?!");
+
+	  if (nl->bN->ports[j].input) {
+	    if ((i >> pos) & 1) {
+	      val = val | (1 << k);
+	    }
+	  }
+	  else {
+	    /* it's an output! */
+	    if (bitset_tst (_outvals[opos], i)) {
+	      val = val | (1 << k);
+	    }
+	  }
+	}
+	else {
+	  if (bitset_tst (_outvals[loc], i)) {
+	    val = val | (1 << k);
+	  }
+	  loc++;
+	}
+      }
+
+      if (is_stateholding) {
+	if (bitset_tst (_tt[0], val) && bitset_tst (_tt[1], val)) {
+	  /* -- interference -- */
+	  bitset_set (_forbidden, i);
+	  continue;
+	}
+      }
       
       NLFP (fp, "leakage_power() {\n");
       tab();
@@ -590,12 +724,19 @@ int run_leakage_scenarios (FILE *fp,
 
 #if 1
   unlink ("_spicelk_.spi");
-  unlink ("_spicelk_.spi.mt0");
-  unlink ("_spicelk_.spi.raw");
-  unlink ("_spicelk_.spi.tr0");
   unlink ("_spicelk_.log");
   unlink ("_spicelk_.trace");
   unlink ("_spicelk_.names");
+
+  /* -- Xyce -- */
+  unlink ("_spicelk_.spi.mt0");
+  unlink ("_spicelk_.spi.raw");
+
+  /* -- hspice -- */
+  unlink ("_spicelk_.mt0");
+  unlink ("_spicelk_.tr0");
+  unlink ("_spicelk_.st0");
+  unlink ("_spicelk_.ic0");
 #endif
 
   A_FREE (outnode);
@@ -613,8 +754,6 @@ int run_input_cap_scenarios (FILE *fp,
   int num_inputs;
   char buf[1024];
 
-  printf ("Analyzing input capacitance for %s\n", p->getName());
-
   nl = np->getNL (p);
 
   num_inputs = get_num_inputs (nl);
@@ -631,13 +770,241 @@ int run_input_cap_scenarios (FILE *fp,
     return 0;
   }
 
+  /* -- resis to input -- */
+
+  int pos = 0;
+  for (int i=0; i < A_LEN (nl->bN->ports); i++) {
+    if (nl->bN->ports[i].omit) continue;
+    if (!nl->bN->ports[i].input) continue;
+    fprintf (sfp, "Rdrv%d q%d p%d resistor\n", pos, pos, pos);
+    pos++;
+  }
+  fprintf (sfp, "\n");
+
+  print_input_cap_cases (sfp, "q", num_inputs, nl);
+
+  /* measure input delays! */
+
+  double period = config_get_real ("xcell.period");
+  double vdd = config_get_real ("xcell.Vdd");
+  double window = config_get_real ("xcell.cap_window");
+    
+  for (int i=0; i < num_inputs; i++) {
+    for (int j=0; j < ((1 << (num_inputs-1))); j++) {
+      double my_start = i*(1 << (num_inputs-1))*period + period + period*j;
+      
+      fprintf (sfp, ".measure tran cap_tup_%d_%d_0 trig V(q%d) VAL=%g TD=%gp RISE=1 TARG V(p%d) VAL=%g\n", i, j, i, (vdd*0.05),  my_start + window,
+	       i, vdd*(1-config_get_real ("xcell.cap_measure")));
+      fprintf (sfp, ".measure tran cap_tup_%d_%d_1 trig V(q%d) VAL=%g TD=%gp RISE=2 TARG V(p%d) VAL=%g\n", i, j, i, (vdd*0.05),
+	       my_start + window,
+	       i, vdd*(1-config_get_real ("xcell.cap_measure")));
+      fprintf (sfp, ".measure tran cap_tdn_%d_%d_0 trig V(q%d) VAL=%g TD=%gp FALL=1 TARG V(p%d) VAL=%g\n", i, j, i, (vdd*0.95),
+	       my_start + window,
+	       i, vdd*(1-config_get_real ("xcell.cap_measure")));
+      fprintf (sfp, ".measure tran cap_tdn_%d_%d_1 trig V(q%d) VAL=%g TD=%gp FALL=2 TARG V(p%d) VAL=%g\n", i, j, i, (vdd*0.95),
+	       my_start + window,
+	       i, vdd*(1-config_get_real ("xcell.cap_measure")));
+    }
+  }
+
+  fprintf (sfp, ".tran 10p %gp\n",  num_inputs * ((1 << (num_inputs-1))) * period + period);
   
-
-
+  fprintf (sfp, "\n.end\n");
+  
   fclose (sfp);
 
+  snprintf (buf, 1024, "%s _spicecap_.spi > _spicecap_.log 2>&1",
+	    config_get_string ("xcell.spice_binary"));
+  system (buf);
+
+  double *time_up;
+  double *time_dn;
+  int *upcnt, *dncnt;
+
+  MALLOC (upcnt, int, num_inputs);
+  MALLOC (dncnt, int, num_inputs);
+  MALLOC (time_up, double, num_inputs);
+  MALLOC (time_dn, double, num_inputs);
+  for (int i=0; i < num_inputs; i++) {
+    time_up[i] = 0;
+    time_dn[i] = 0;
+    upcnt[i] = 0;
+    dncnt[i] = 0;
+  }
+
+  sfp = fopen ("_spicecap_.spi.mt0", "r");
+  if (!sfp) {
+    sfp = fopen ("_spicecap_.mt0", "r");
+    if (!sfp) {
+      fatal_error ("Could not open measurement output from simulation.\n");
+    }
+  }
+  while (fgets (buf, 1024, sfp)) {
+    int i, j;
+    double tm;
+    char *s = strtok (buf, " \t");
+    if (strncasecmp (s, "cap_tup_", 8) == 0) {
+      if (sscanf (s + 8, "%d", &i) != 1) {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+      j = 8;
+      while (*(s+j) && isdigit (*(s+j))) {
+	j++;
+      }
+      if (*(s+j) != '_') {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+      j++;
+      if (sscanf (s+j, "%d", &j) != 1) {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+      s = strtok (NULL, " \t");
+      if (strcmp (s, "=") != 0) {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+      s = strtok (NULL, " \t");
+      if (sscanf (s, "%lg", &tm) != 1) {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+
+      if (tm < 0) {
+	warning ("%s: measurement failed: time=%g for input cap measurement %d_%d",
+		 p->getName(), i, j);
+      }
+
+      time_up[i] += tm;
+      upcnt[i]++;
+    }
+    else if (strncasecmp (s, "cap_tdn_", 8) == 0) {
+      if (sscanf (s + 8, "%d", &i) != 1) {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+      j = 8;
+      while (*(s+j) && isdigit (*(s+j))) {
+	j++;
+      }
+      if (*(s+j) != '_') {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+      j++;
+      if (sscanf (s+j, "%d", &j) != 1) {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+      s = strtok (NULL, " \t");
+      if (strcmp (s, "=") != 0) {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+      s = strtok (NULL, " \t");
+      if (sscanf (s, "%lg", &tm) != 1) {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+
+      time_dn[i] += tm;
+      dncnt[i]++;
+    }
+  }
+  fclose (sfp);
+
+  for (int i=0; i < num_inputs; i++) {
+    if (upcnt[i] != dncnt[i]) {
+      warning ("What?!");
+    }
+    if (i > 0 && upcnt[i] != upcnt[i-1]) {
+      warning ("What?!!");
+    }
+    if (upcnt[i] == 0 || dncnt[i] == 0) {
+      warning ("Bad news");
+      continue;
+    }
+    time_up[i] /= upcnt[i];
+    time_dn[i] /= dncnt[i];
+
+    time_up[i] = time_up[i]/(log(1/config_get_real ("xcell.cap_measure"))*
+			     config_get_real ("xcell.R_value")*
+			     config_get_real ("xcell.units.resis_conv"));
+
+    time_dn[i] = time_dn[i]/(log(1/config_get_real ("xcell.cap_measure"))*
+			     config_get_real ("xcell.R_value")*
+			     config_get_real ("xcell.units.resis_conv"));
+
+    int pos = i;
+    int j;
+    for (j=0; j < A_LEN (nl->bN->ports); j++) {
+      if (nl->bN->ports[j].omit) continue;
+      if (!nl->bN->ports[j].input) continue;
+      if (pos == 0) {
+	pos = j;
+	break;
+      }
+      pos--;
+    }
+    Assert (j != A_LEN (nl->bN->ports), "port count error");
+
+    ActId *tmp;
+    tmp = nl->bN->ports[pos].c->toid();
+    tmp->sPrint (buf, 1024);
+    delete tmp;
+    NLFP (fp, "pin(");  a->mfprintf (fp, "%s", buf);  fprintf (fp, ") {\n");
+    tab();
+    NLFP (fp, "direction : input;\n");
+    NLFP (fp, "rise_capacitance : %g;\n", time_up[i]*1e15);
+    NLFP (fp, "fall_capacitance : %g;\n", time_dn[i]*1e15);
+    untab();
+    NLFP (fp, "}\n");
+  }
+
+#if 1
+  unlink ("_spicecap_.spi");
+  unlink ("_spicecap_.log");
+
+  /* Xyce */
+  unlink ("_spicecap_.spi.mt0");
+
+  /* hspice */
+  unlink ("_spicecap_.mt0");
+  unlink ("_spicecap_.st0");
+  unlink ("_spicecap_.ic0");
+#endif
   
 
+  return 1;
+}
+
+
+int run_dynamic_comb (FILE *lfp, Act *a, ActNetlistPass *np, netlist_t *nl)
+{
+  FILE *fp;
+  
+  fp = fopen ("_spicedy_.spi", "w");
+  if (!fp) {
+    fatal_error ("Could not open _spicedy_.spi for writing");
+  }
+  /* -- std header that instantiates the module -- */
+  if (!gen_spice_header (fp, a, np, nl->bN->p)) {
+    fclose (fp);
+    return 0;
+  }
+
+  /* Run dynamic scenarios 
+
+   - combinational logic:
+        a : 0 -> 1 
+	  For each assignment to others where the 0->1 transition
+        changes the output, emit case
+
+	same thing for 1 -> 0
+
+   - state-holding logic, single gate
+   
+       analyze the production rule for the gate
+
+       figure out the values of the other signals in all the leakage
+       cases
+       
+  */
+     
+  
+  fclose (fp);
   return 1;
 }
 
@@ -672,6 +1039,7 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
     A_INIT (_sh_vars);
     _collect_support (nl, is_stateholding->v->e_up);
     _collect_support (nl, is_stateholding->v->e_dn);
+    
     Assert (A_LEN (_sh_vars) > 0, "What?!");
 
     _tt[0] = bitset_new (1 << A_LEN (_sh_vars));
@@ -683,20 +1051,27 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
     _build_truth_table (nl, is_stateholding->v->e_dn, 0);
   }
 
+  printf ("Cell: %s %s\n", p->getName(), is_stateholding ? "(state-holding)" : "");
+  
   /* -- add leakage information to the .lib file -- */
-  if (!run_leakage_scenarios (lfp, a, np, p)) {
+  if (!run_leakage_scenarios (lfp, a, np, p, is_stateholding)) {
     return 0;
   }
 
-  /* -- XXX: the leakage scenarios should also record
-          - internal signals
-	  - output value
-  */
+  /* -- generate input capacitance estimates -- */
+  if (!run_input_cap_scenarios (lfp, a, np, p)) {
+    return 0;
+  }
 
-  printf ("%s stateholding: %d\n", p->getName(), is_stateholding ? 1 : 0);
 
-  /* -- dynamic scenarios -- */
-  
+  /* -- dynamic scenarios for output pins -- */
+
+  if (is_stateholding == 0) {
+    if (!run_dynamic_comb (lfp, a, np, nl)) {
+      return 0;
+    }
+  }
+
   for (int i=0; i < _num_outputs; i++) {
     bitset_free (_outvals[i]);
   }
@@ -708,48 +1083,18 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
   }
   FREE (_outvals);
   
-  if (A_LEN (_sh_vars) > 0) {
+  if (is_stateholding) {
     bitset_free (_tt[0]);
     bitset_free (_tt[1]);
+    bitset_free (_forbidden);
+    _forbidden = NULL;
+    _tt[0] = NULL;
+    _tt[1] = NULL;
   }
   A_FREE (_sh_vars);
 
   return 1;
   
-  fp = fopen ("_spicedy_.spi", "w");
-  if (!fp) {
-    fatal_error ("Could not open _spicedy_.spi for writing");
-  }
-  /* -- std header that instantiates the module -- */
-  if (!gen_spice_header (fp, a, np, p)) {
-    fclose (fp);
-    return 0;
-  }
-
-
-  /* Run dynamic scenarios 
-
-   - combinational logic:
-        a : 0 -> 1 
-	  For each assignment to others where the 0->1 transition
-        changes the output, emit case
-
-	same thing for 1 -> 0
-
-   - state-holding logic, single gate
-   
-       analyze the production rule for the gate
-
-       figure out the values of the other signals in all the leakage
-       cases
-       
-  */
-     
-     
-
-  
-  
-  fclose (fp);
   return 1;
 }
 

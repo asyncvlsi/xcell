@@ -138,7 +138,7 @@ int get_num_inputs (netlist_t *nl)
 
 L_A_DECL (act_booleanized_var_t *, _sh_vars);
 static bitset_t *_tt[2];
-static bitset_t **_outvals; 	// value of outputs + _sh_vars
+static bitset_t **_outvals; 	// value of outputs, followed by + _sh_vars
 static int _num_outputs;
 
 static bitset_t *_forbidden;	// forbidden port input scenarios
@@ -256,6 +256,38 @@ void _build_truth_table (netlist_t *nl, act_prs_expr_t *e, int idx)
       bitset_clr (_tt[idx], i);
     }
   }
+}
+
+int get_input_pin (netlist_t *nl, int pin)
+{
+  int pos = pin;
+  int j;
+  for (j=0; j < A_LEN (nl->bN->ports); j++) {
+    if (nl->bN->ports[j].omit) continue;
+    if (!nl->bN->ports[j].input) continue;
+    if (pos == 0) {
+      return j;
+    }
+    pos--;
+  }
+  Assert (0, "Could not find input pin!");
+  return -1;
+}
+
+int get_output_pin (netlist_t *nl, int pin)
+{
+  int pos = pin;
+  int j;
+  for (j=0; j < A_LEN (nl->bN->ports); j++) {
+    if (nl->bN->ports[j].omit) continue;
+    if (nl->bN->ports[j].input) continue;
+    if (pos == 0) {
+      return j;
+    }
+    pos--;
+  }
+  Assert (0, "Could not find output pin!");
+  return -1;
 }
 
 
@@ -688,17 +720,7 @@ int run_leakage_scenarios (FILE *fp,
       tab();
       NLFP (fp, "when : \"");
       for (int k=0; k < num_inputs; k++) {
-	int pos;
-	pos = k;
-	for (int j=0; j < A_LEN (nl->bN->ports); j++) {
-	  if (nl->bN->ports[j].omit) continue;
-	  if (!nl->bN->ports[j].input) continue;
-	  if (pos == 0) {
-	    pos = j;
-	    break;
-	  }
-	  pos--;
-	}
+	int pos = get_input_pin (nl, k);
 
 	ActId *tmp;
 	tmp = nl->bN->ports[pos].c->toid();
@@ -927,18 +949,7 @@ int run_input_cap_scenarios (FILE *fp,
 			     config_get_real ("xcell.R_value")*
 			     config_get_real ("xcell.units.resis_conv"));
 
-    int pos = i;
-    int j;
-    for (j=0; j < A_LEN (nl->bN->ports); j++) {
-      if (nl->bN->ports[j].omit) continue;
-      if (!nl->bN->ports[j].input) continue;
-      if (pos == 0) {
-	pos = j;
-	break;
-      }
-      pos--;
-    }
-    Assert (j != A_LEN (nl->bN->ports), "port count error");
+    int pos = get_input_pin (nl, i);
 
     ActId *tmp;
     tmp = nl->bN->ports[pos].c->toid();
@@ -971,40 +982,250 @@ int run_input_cap_scenarios (FILE *fp,
 }
 
 
-int run_dynamic_comb (FILE *lfp, Act *a, ActNetlistPass *np, netlist_t *nl)
+/*------------------------------------------------------------------------
+ *
+ * Dynamic scenarios
+ *
+ *------------------------------------------------------------------------
+ */
+int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
+		 node_t *sh)
 {
-  FILE *fp;
+  FILE *sfp;
+  bitset_t *st[2];
+  int num_inputs;
   
-  fp = fopen ("_spicedy_.spi", "w");
-  if (!fp) {
-    fatal_error ("Could not open _spicedy_.spi for writing");
-  }
-  /* -- std header that instantiates the module -- */
-  if (!gen_spice_header (fp, a, np, nl->bN->p)) {
-    fclose (fp);
+  num_inputs = get_num_inputs (nl);
+  if (num_inputs == 0) {
     return 0;
   }
 
-  /* Run dynamic scenarios 
+  /* Run dynamic scenarios.
 
-   - combinational logic:
-        a : 0 -> 1 
-	  For each assignment to others where the 0->1 transition
-        changes the output, emit case
+     If there's a state-holding node, build state-holding truth table
+     from the existing truth tables.
 
-	same thing for 1 -> 0
-
-   - state-holding logic, single gate
-   
-       analyze the production rule for the gate
-
-       figure out the values of the other signals in all the leakage
-       cases
-       
+     The assumption is that the state-holding gate is fully controlled
+     from the primary input.
   */
-     
+  if (sh) {
+    int *iomap;
+    int *xmap;
+    int xcount;
+    
+    /* -- we know the truth table for the pull-up and pull-down, so
+          create it based directly on input 
+     --*/
+    st[0] = bitset_new (num_inputs); /* pull-down */
+    bitset_clear (st[0]);
+    st[1] = bitset_new (num_inputs); /* pull-up */
+    bitset_clear (st[1]);
+
+    MALLOC (iomap, int, num_inputs + _num_outputs);
+    for (int i=0; i < num_inputs; i++) {
+      iomap[i] = -1;
+    }
+
+    xcount = 0;
+    for (int i=0; i < A_LEN (_sh_vars); i++) {
+      if (_sh_vars[i]->isport) continue;
+      xcount++;
+    }
+
+    if (xcount > 0) {
+      MALLOC (xmap, int, xcount);
+      for (int i=0; i < xcount; i++) {
+	xmap[i] = -1;
+      }
+    }
+
+    /* build map from sh_vars to inputs */
+    for (int i=0; i < A_LEN (_sh_vars); i++) {
+      int pos = 0;
+      int opos = num_inputs;
+      int xpos = 0;
+      for (int j=0; j < A_LEN (nl->bN->ports); j++) {
+	if (nl->bN->ports[j].omit) continue;
+	if (nl->bN->ports[j].c == _sh_vars[i]->id) {
+	  if (nl->bN->ports[j].input) {
+	    iomap[pos] = i;
+	  }
+	  else {
+	    iomap[opos] = i;
+	  }
+	  break;
+	}
+	if (nl->bN->ports[j].input) {
+	  pos++;
+	}
+	else {
+	  opos++;
+	}
+      }
+      if (pos >= num_inputs && opos >= (num_inputs + _num_outputs)) {
+	if (_sh_vars[i]->isport) {
+	  fatal_error ("Map error?");
+	}
+	else {
+	  Assert (xpos < xcount, "Hmmm");
+	  xmap[xpos] = i;
+	  xpos++;
+	}
+      }
+    }
+
+    for (int i=0; i < (1 << num_inputs); i++) {
+      unsigned int idx = 0;
+
+      for (int j=0; j < num_inputs; j++) {
+	if (iomap[j] != -1) {
+	  if ((i >> j) & 0x1) {
+	    idx |= (1 << iomap[j]);
+	  }
+	}
+      }
+
+      for (int j=0; j < _num_outputs; j++) {
+	if (iomap[num_inputs + j] != -1) {
+	  if (bitset_tst (_outvals[j], i)) {
+	    idx |= (1 << iomap[num_inputs + j]);
+	  }
+	}
+      }
+
+      for (int j=0; j < xcount; j++) {
+	if (xmap[j] != -1) {
+	  if (bitset_tst (_outvals[j + _num_outputs], i)) {
+	    idx |= (1 << xmap[j]);
+	  }
+	}
+      }
+
+      if (bitset_tst (_tt[0], idx)) {
+	bitset_set (st[0], i);
+      }
+      if (bitset_tst (_tt[1], idx)) {
+	bitset_set (st[1], i);
+      }
+    }
+    if (xcount > 0) {
+      FREE (xmap);
+    }
+    FREE (iomap);
+  }
   
-  fclose (fp);
+  sfp = fopen ("_spicedy_.spi", "w");
+  if (!sfp) {
+    fatal_error ("Could not open _spicedy_.spi for writing");
+  }
+
+  /* -- std header that instantiates the module -- */
+  if (!gen_spice_header (sfp, a, np, nl->bN->p)) {
+    fclose (sfp);
+    return 0;
+  }
+
+  /* -- create spice scenarios -- */
+  for (int nout=0; nout < _num_outputs; nout++) {
+    int pos = get_output_pin (nl, nout);
+
+    for (int i=0; i < (1 << num_inputs); i++) {
+      /* -- current input vector scenario: i -- */
+    
+      for (int j=0; j < num_inputs; j++) {
+	/* -- current bit being checked: j -- */
+
+      }
+    }
+  }
+
+  for (int nout=0; nout < _num_outputs; nout++) {
+    int pos = get_output_pin (nl, nout);
+    ActId *tmp;
+    char buf[1024];
+    NLFP (fp, "pin(");
+    tmp = nl->bN->ports[pos].c->toid();
+    tmp->sPrint (buf, 1024);
+    delete tmp;
+    a->mfprintf (fp, "%s", buf);
+
+    fprintf (fp, ") {\n");
+    tab ();
+    NLFP (fp, "direction : output;\n");
+    NLFP (fp, "function : ");
+    if (!sh) {
+      int first = 1;
+      /*-- print function --*/
+      fprintf (fp, "\"");
+      for (int i=0; i < (1 << num_inputs); i++) {
+	if (bitset_tst (_outvals[nout], i)) {
+	  if (!first) {
+	    fprintf (fp, "+");
+	  }
+	  first = 0;
+	  for (int j=0; j < num_inputs; j++) {
+	    int ipin = get_input_pin (nl, j);
+
+	    if (j != 0) {
+	      fprintf (fp, "*");
+	    }
+	    
+	    if (!((i >> j) & 1)) {
+	      fprintf (fp, "!");
+	    }
+	    tmp = nl->bN->ports[ipin].c->toid();
+	    tmp->sPrint (buf, 1024);
+	    delete tmp;
+	    a->mfprintf (fp, "%s", buf);
+	  }
+	}
+      }
+      fprintf (fp, "\";\n");
+    }
+    else {
+      /* XXX: state-holding gate function definition */
+      fprintf (fp, " \" \";\n");
+    }
+
+    /* -- measurement results -- 
+
+
+       internal_power() {
+         related_pin : "...";
+	 when : "others";
+	 rise_power (power_8x8) {
+	  index_1(...)
+	  index_2(...)
+	  values("...")
+         }
+       }
+       timing() {
+         related_pin : "...";
+	 timing_sense : positive_unate, negative_unate, non_unate ;
+	 when : "...";
+	 cell_rise(delay8x8) {
+	 }
+	 rise_transition(delay_8x8) {
+	 }
+       }
+     */
+    
+    untab ();
+    NLFP (fp, "}\n");
+  }
+  
+  fclose (sfp);
+
+
+  if (sh) {
+    bitset_free (st[0]);
+    bitset_free (st[1]);
+  }
+
+#if 1
+  unlink ("_spicedy_.spi");
+#endif  
+  
   return 1;
 }
 
@@ -1066,10 +1287,8 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
 
   /* -- dynamic scenarios for output pins -- */
 
-  if (is_stateholding == 0) {
-    if (!run_dynamic_comb (lfp, a, np, nl)) {
-      return 0;
-    }
+  if (!run_dynamic (lfp, a, np, nl, is_stateholding)) {
+    return 0;
   }
 
   for (int i=0; i < _num_outputs; i++) {
@@ -1093,8 +1312,6 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
   }
   A_FREE (_sh_vars);
 
-  return 1;
-  
   return 1;
 }
 

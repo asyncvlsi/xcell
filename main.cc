@@ -136,12 +136,21 @@ int get_num_inputs (netlist_t *nl)
   return num_inputs;
 }
 
+/**
+   _sh_vars is the support for the state-holding variable
+**/
 L_A_DECL (act_booleanized_var_t *, _sh_vars);
-static bitset_t *_tt[2];
-static bitset_t **_outvals; 	// value of outputs, followed by + _sh_vars
-static int _num_outputs;
 
-static bitset_t *_forbidden;	// forbidden port input scenarios
+/**
+   _tt[1], _tt[0] : pull-up/pull-down truth table, numbering
+   corresponding to _sh_vars[]
+**/
+static bitset_t *_tt[2];
+
+static bitset_t **_outvals; 	// value of outputs, followed by +
+				// _sh_vars
+
+static int _num_outputs;	/* number of outputs */
 
 void _add_support_var (netlist_t *nl, ActId *id)
 {
@@ -617,14 +626,6 @@ int run_leakage_scenarios (FILE *fp,
 
   atrace_close (tr);
 
-  if (is_stateholding) {
-    _forbidden = bitset_new (num_inputs);
-    bitset_clear (_forbidden);
-  }
-  else {
-    _forbidden = NULL;
-  }
-
   /*
     Step 2: leakage measurements
   */
@@ -711,7 +712,6 @@ int run_leakage_scenarios (FILE *fp,
       if (is_stateholding) {
 	if (bitset_tst (_tt[0], val) && bitset_tst (_tt[1], val)) {
 	  /* -- interference -- */
-	  bitset_set (_forbidden, i);
 	  continue;
 	}
       }
@@ -994,6 +994,7 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
   FILE *sfp;
   bitset_t *st[2];
   int num_inputs;
+  int sh_outvar;
   
   num_inputs = get_num_inputs (nl);
   if (num_inputs == 0) {
@@ -1022,7 +1023,7 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
     bitset_clear (st[1]);
 
     MALLOC (iomap, int, num_inputs + _num_outputs);
-    for (int i=0; i < num_inputs; i++) {
+    for (int i=0; i < num_inputs + _num_outputs; i++) {
       iomap[i] = -1;
     }
 
@@ -1112,6 +1113,82 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
       FREE (xmap);
     }
     FREE (iomap);
+
+
+    /* -- 
+       if sh is not a port, then check if there is an output that's
+       exactly the complement of this variable
+       -- */
+
+    int *is_out;
+    MALLOC (is_out, int, _num_outputs);
+    for (int i=0; i < _num_outputs; i++) {
+      is_out[i] = -1;
+    }
+    /* -1 = new, -2 = no, 0 = non-inv, 1 = inv */
+
+    for (int i=0; i < (1 << num_inputs); i++) {
+      if (bitset_tst (st[0], i)) {
+	/* pull-down is 1 */
+	for (int j=0; j < _num_outputs; j++) {
+	  if (is_out[j] == -2) continue;
+	  if (bitset_tst (_outvals[j], i)) {
+	    if (is_out[j] == -1) {
+	      is_out[j] = 1;
+	    }
+	    else if (is_out[j] != 1) {
+	      is_out[j] = -2;
+	    }
+	  }
+	  else {
+	    if (is_out[j] == -1) {
+	      is_out[j] = 0;
+	    }
+	    else if (is_out[j] != 0) {
+	      is_out[j] = -2;
+	    }
+	  }
+	}
+      }
+      else if (bitset_tst (st[1], i)) {
+	/* pull-up is 1 */
+	for (int j=0; j < _num_outputs; j++) {
+	  if (is_out[j] == -2) continue;
+	  if (!bitset_tst (_outvals[j], i)) {
+	    if (is_out[j] == -1) {
+	      is_out[j] = 1;
+	    }
+	    else if (is_out[j] != 1) {
+	      is_out[j] = -2;
+	    }
+	  }
+	  else {
+	    if (is_out[j] == -1) {
+	      is_out[j] = 0;
+	    }
+	    else if (is_out[j] != 0) {
+	      is_out[j] = -2;
+	    }
+	  }
+	}
+      }
+    }
+
+    sh_outvar = -1;
+    for (int j=0; j < _num_outputs; j++) {
+      if (is_out[j] == 0) {
+	sh_outvar = 2*j;
+	break;
+      }
+      if (is_out[j] == 1) {
+	sh_outvar = 2*j+1;
+	break;
+      }
+    }
+
+    if (sh_outvar == -1) {
+      warning ("Couldn't find output that corresponds to state-holding gate");
+    }
   }
   
   sfp = fopen ("_spicedy_.spi", "w");
@@ -1134,7 +1211,24 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
     
       for (int j=0; j < num_inputs; j++) {
 	/* -- current bit being checked: j -- */
+	unsigned int opp = i ^ (1 << j);
 
+	if (sh) {
+	  /* st[0], st[1] has pull-up and pull-down */
+
+	}
+	else {
+	  /*-- combinational logic --*/
+	  
+	  /* _outvals has truth table for output */
+	  if ((!!bitset_tst (_outvals[nout], i)) !=
+	      (!!bitset_tst (_outvals[nout], opp))) {
+
+	    /* Found transition! Characterize this transition */
+	    
+
+	  }
+	}
       }
     }
   }
@@ -1284,9 +1378,7 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
     return 0;
   }
 
-
   /* -- dynamic scenarios for output pins -- */
-
   if (!run_dynamic (lfp, a, np, nl, is_stateholding)) {
     return 0;
   }
@@ -1305,8 +1397,6 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
   if (is_stateholding) {
     bitset_free (_tt[0]);
     bitset_free (_tt[1]);
-    bitset_free (_forbidden);
-    _forbidden = NULL;
     _tt[0] = NULL;
     _tt[1] = NULL;
   }

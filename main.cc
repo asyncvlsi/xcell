@@ -27,6 +27,7 @@
 #include <act/act.h>
 #include <act/passes.h>
 
+
 #define NLFP  line(fp); fprintf
 
 static int tabs = 0;
@@ -332,7 +333,7 @@ void print_input_cap_cases (FILE *sfp,
 {
   double vdd = config_get_real ("xcell.Vdd");
   double period = config_get_real ("xcell.period");
-  double window = config_get_real ("xcell.cap_window");
+  double window = config_get_real ("xcell.short_window");
 
   for (int i=0; i < num_inputs; i++) {
 
@@ -370,7 +371,7 @@ void print_input_cap_cases (FILE *sfp,
       offset += window;
       tm++;
       if (offset >= tm*period) {
-	warning ("Period (%g) needs to be >= cap_window (%g)*5\n", period, window);
+	warning ("Period (%g) needs to be >= short_window (%g)*5\n", period, window);
       }
     }
 
@@ -809,7 +810,7 @@ int run_input_cap_scenarios (FILE *fp,
 
   double period = config_get_real ("xcell.period");
   double vdd = config_get_real ("xcell.Vdd");
-  double window = config_get_real ("xcell.cap_window");
+  double window = config_get_real ("xcell.short_window");
     
   for (int i=0; i < num_inputs; i++) {
     for (int j=0; j < ((1 << (num_inputs-1))); j++) {
@@ -1091,6 +1092,14 @@ int find_multi_driven_assignment (bitset_t *b, bitset_t *bopp,
   return idx ^ base_idx;
 }
 
+struct dynamic_case {
+  int nidx;
+  int idx[4];
+  int out_id;
+  int in_id;
+  int in_init;
+  int out_init;
+};
 
 /*------------------------------------------------------------------------
  *
@@ -1106,6 +1115,10 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
   int num_inputs;
   int sh_outvar;
   int *is_out = NULL;
+
+  A_DECL (struct dynamic_case, dyn);
+
+  A_INIT (dyn);
   
   num_inputs = get_num_inputs (nl);
   if (num_inputs == 0) {
@@ -1313,6 +1326,7 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
   }
 
   /* -- create spice scenarios -- */
+
   for (int nout=0; nout < _num_outputs; nout++) {
     int pos = get_output_pin (nl, nout);
 
@@ -1330,9 +1344,11 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 
 	if (drive_up != -1) {
 	  /* state-holding output driven high */
+#if 0	  
 	  printf ("find-sh-case (%d): ", drive_up);
 	  _print_input_case (stdout, a, nl, num_inputs, i);
 	  printf ("\n");
+#endif	  
 
 	  for (int j=0; j < num_inputs; j++) {
 	    unsigned int opp = i ^ (1 << j);
@@ -1341,35 +1357,68 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 	       we have a scenario */
 	    if (!bitset_tst (st[drive_up], opp)) {
 	      if (bitset_tst (st[1-drive_up], opp)) {
-		printf (" flip %d (comb)\n", j);
+
+		A_NEW (dyn, struct dynamic_case);
+		A_NEXT (dyn).nidx = 2;
+		A_NEXT (dyn).idx[0] = opp;
+		A_NEXT (dyn).idx[1] = i;
+		A_NEXT (dyn).out_id = nout;
+		A_NEXT (dyn).in_id = j;
+		A_NEXT (dyn).in_init = ((opp >> j) & 1);
+		A_NEXT (dyn).out_init = drive_up ? 0 : 1;
+		A_INC (dyn);
+		
+		//printf (" flip %d (comb)\n", j);
 	      }
 	      else {
 		int k = find_driven_assignment (st[1-drive_up], st[drive_up],
 						num_inputs, j, (1-((i >> j) & 1)),
 						opp);
 		if (k >= 0) {
-		  printf (" flip %d (sh) ... from ", j);
-		  _print_input_case (stdout, a, nl, num_inputs, k);
-		  printf (" to ");
-		  _print_input_case (stdout, a, nl, num_inputs, opp);
-		  printf ("\n");
+		  A_NEW (dyn, struct dynamic_case);
+		  A_NEXT (dyn).nidx = 3;
+		  A_NEXT (dyn).idx[0] = k;
+		  A_NEXT (dyn).idx[1] = opp;
+		  A_NEXT (dyn).idx[2] = i;
+		  A_NEXT (dyn).out_id = nout;
+		  A_NEXT (dyn).in_id = j;
+		  A_NEXT (dyn).in_init = ((opp >> j) & 1);
+		  A_NEXT (dyn).out_init = drive_up ? 0 : 1;
+		  A_INC (dyn);
+		
+		  //printf (" flip %d (sh) ... from ", j);
+		  //_print_input_case (stdout, a, nl, num_inputs, k);
+		  //printf (" to ");
+		  //_print_input_case (stdout, a, nl, num_inputs, opp);
+		  //printf ("\n");
 		}
 		else {
 		  k = find_multi_driven_assignment (st[1-drive_up], st[drive_up],
 						    num_inputs, j, (1-((i>>j)&1)), opp);
 		  if (k < 0) {
-
-		    printf (" flip %d (sh) not found\n", j);
+		    //printf (" flip %d (sh) not found\n", j);
 		  }
 		  else {
-		    printf (" flip %d (sh) ... from ", j);
-		    _print_input_case (stdout, a, nl, num_inputs, k);
-		    printf (" to ");
-		    _print_input_case (stdout, a, nl, num_inputs,
-				       k ^ (1 << j));
-		    printf (" to ");
-		    _print_input_case (stdout, a, nl, num_inputs, opp);
-		    printf ("\n");
+		    A_NEW (dyn, struct dynamic_case);
+		    A_NEXT (dyn).nidx = 4;
+		    A_NEXT (dyn).idx[0] = k;
+		    A_NEXT (dyn).idx[1] = k ^ (1 << j);
+		    A_NEXT (dyn).idx[2] = opp;
+		    A_NEXT (dyn).idx[3] = i;
+		    A_NEXT (dyn).out_id = nout;
+		    A_NEXT (dyn).in_id = j;
+		    A_NEXT (dyn).in_init = ((opp >> j) & 1);
+		    A_NEXT (dyn).out_init = drive_up ? 0 : 1;
+		    A_INC (dyn);
+		    
+		    //printf (" flip %d (sh) ... from ", j);
+		    //_print_input_case (stdout, a, nl, num_inputs, k);
+		    //printf (" to ");
+		    //_print_input_case (stdout, a, nl, num_inputs,
+		    //k ^ (1 << j));
+		    //printf (" to ");
+		    //_print_input_case (stdout, a, nl, num_inputs, opp);
+		    //printf ("\n");
 		  }
 		}
 	      }
@@ -1392,15 +1441,97 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 	  if ((!!bitset_tst (_outvals[nout], i)) !=
 	      (!!bitset_tst (_outvals[nout], opp))) {
 	    /* Found transition! Characterize this transition */
+	    A_NEW (dyn, struct dynamic_case);
+	    A_NEXT (dyn).nidx = 2;
+	    A_NEXT (dyn).idx[0] = opp;
+	    A_NEXT (dyn).idx[1] = i;
+	    A_NEXT (dyn).out_id = nout;
+	    A_NEXT (dyn).in_id = j;
+	    A_NEXT (dyn).in_init = ((opp >> j) & 1);
+	    A_NEXT (dyn).out_init = !!bitset_tst (_outvals[nout], opp);
+	    A_INC (dyn);
+#if 0	    
 	    printf ("input: %d -> %d : ", (opp >> j) & 1, (i >> j) & 1);
 	    _print_input_case (stdout, a, nl, num_inputs, i);
 	    printf ("; out: %d -> %d\n", !!bitset_tst (_outvals[nout], opp),
 		    !!bitset_tst (_outvals[nout], i));
+#endif	    
 	  }
 	}
       }
     }
   }
+
+#if 0
+  for (int i=0; i < A_LEN (dyn); i++) {
+    printf ("%d-step: (out[%d]: %s; in[%d]: %s)", dyn[i].nidx,
+	    dyn[i].out_id, dyn[i].out_init ? "fall" : "rise",
+	    dyn[i].in_id, dyn[i].in_init ? "fall" : "rise");
+    printf ("\n  ");
+    for (int j=0; j < dyn[i].nidx; j++) {
+      if (j != 0) {
+	printf (" -> ");
+      }
+      _print_input_case (stdout, a, nl, num_inputs, dyn[i].idx[j]);
+    }
+    printf ("\n");
+  }
+#endif
+
+  /* emit waveform for each input */
+
+  int tm = 1;
+  double window = config_get_real ("xcell.short_window");
+  double vdd = config_get_real ("xcell.Vdd");
+  double period = config_get_real ("xcell.period");
+  int nslew = config_get_table_size ("xcell.input_trans");
+  double *slew_table = config_get_table_real ("xcell.input_trans");
+  
+  for (int i=0; i < num_inputs; i++) {
+    fprintf (sfp, "Vn%d p%d 0 PWL (0p 0 1000p 0\n", i, i);
+
+    /*-- this has to be done with different input slew --*/
+    for (int ns=0; ns < nslew; ns++) {
+      for (int j=0; j < A_LEN (dyn); j++) {
+	for (int k=0; k < dyn[j].nidx; k++) {
+	  double val = ((dyn[j].idx[k] >> i) & 1) ? vdd : 0.0;
+
+	  if (k != (dyn[j].nidx-1) || i != (dyn[j].in_id)) {
+	    fprintf (sfp, "+%gp %g %gp %g\n", tm*period + 1 + k*window, val,
+		     tm*period + (k+1)*window, val);
+	  }
+	  else {
+	    double correction = 0.0;
+	    if (dyn[j].in_init == 0) {
+	      correction = (config_get_real ("xcell.waveform.rise_high") -
+			    config_get_real ("xcell.waveform.rise_low"))/100.0;
+	    }
+	    else {
+	      correction = (config_get_real ("xcell.waveform.fall_high") -
+			    config_get_real ("xcell.waveform.fall_low"))/100.0;
+	    }
+	    fprintf (sfp, "+%gp %g\n", tm*period + k*window + slew_table[ns]/correction, val);
+
+	    if (slew_table[ns]/correction >= window) {
+	      warning ("Window is too small; needs to be at least %g\n",
+		       slew_table[ns]/correction);
+	    }
+	  }
+	}
+	tm++;
+      }
+    }
+    fprintf (sfp, "\n");
+  }
+
+  fprintf (sfp, "\n.tran 10p %gp\n", tm*period);
+
+  for (int i=0; i < num_inputs; i++) {
+    /* measure output transit time and delay */
+    
+    
+  }
+  
 
   for (int nout=0; nout < _num_outputs; nout++) {
     int pos = get_output_pin (nl, nout);
@@ -1532,9 +1663,11 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
     bitset_free (st[1]);
   }
 
-#if 1
+#if 0
   unlink ("_spicedy_.spi");
-#endif  
+#endif
+
+  A_FREE (dyn);
   
   return 1;
 }

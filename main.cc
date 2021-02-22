@@ -981,6 +981,116 @@ int run_input_cap_scenarios (FILE *fp,
   return 1;
 }
 
+void _print_input_case (FILE *fp, Act *a, netlist_t *nl, int num_inputs, int idx)
+{
+  char buf[1024];
+  ActId *tmp;
+  
+  for (int j=0; j < num_inputs; j++) {
+    int ipin = get_input_pin (nl, j);
+    
+    if (j != 0) {
+      fprintf (fp, "*");
+    }
+	    
+    if (!((idx >> j) & 1)) {
+      fprintf (fp, "!");
+    }
+    tmp = nl->bN->ports[ipin].c->toid();
+    tmp->sPrint (buf, 1024);
+    delete tmp;
+    a->mfprintf (fp, "%s", buf);
+  }
+}
+
+int find_driven_assignment (bitset_t *b, bitset_t *bopp,
+			    int ninputs, int bit_pos, int bit_val,
+			    int base_idx)
+{
+  int idx;
+  int i;
+
+  i = 0;
+
+  for (i = 0; i < (1 << (ninputs-1)); i++) {
+    idx = (((unsigned)i >> (bit_pos)) << (bit_pos+1)) |
+      (bit_val << bit_pos) | (i & ((1 << bit_pos)-1));
+
+    if (bitset_tst (b, idx) && !bitset_tst (bopp, idx)) {
+      break;
+    }
+  }
+
+  if (i == (1 << (ninputs-1))) {
+    return -1;
+  }
+
+  idx = idx ^ base_idx;
+
+  int cur_idx;
+
+  cur_idx = base_idx;
+
+  for (int i=0; i < ninputs; i++) {
+    if (idx & (1 << i)) {
+      cur_idx = cur_idx ^ (1 << i);
+      if (bitset_tst (b, cur_idx) && !bitset_tst (bopp, cur_idx)) {
+	return cur_idx;
+      }
+      else if (bitset_tst (bopp, cur_idx)) {
+	return idx ^ base_idx;
+      }
+    }
+  }
+  return idx ^ base_idx;
+}
+
+
+/*
+ * We know that the first serach failed
+ */
+int find_multi_driven_assignment (bitset_t *b, bitset_t *bopp,
+				  int ninputs, int bit_pos, int bit_val,
+				  int base_idx)
+{
+  int idx;
+  int i;
+
+  i = 0;
+
+  for (i = 0; i < (1 << (ninputs-1)); i++) {
+    idx = (((unsigned)i >> (bit_pos)) << (bit_pos+1)) |
+      ((1-bit_val) << bit_pos) | (i & ((1 << bit_pos)-1));
+
+    if (bitset_tst (b, idx) && !bitset_tst (bopp, idx)) {
+      break;
+    }
+  }
+
+  if (i == (1 << (ninputs-1))) {
+    return -1;
+  }
+
+  idx = idx ^ base_idx;
+
+  int cur_idx;
+
+  cur_idx = base_idx;
+
+  for (int i=0; i < ninputs; i++) {
+    if (idx & (1 << i)) {
+      cur_idx = cur_idx ^ (1 << i);
+      if (bitset_tst (b, cur_idx) && !bitset_tst (bopp, cur_idx)) {
+	return cur_idx;
+      }
+      else if (bitset_tst (bopp, cur_idx)) {
+	return idx ^ base_idx;
+      }
+    }
+  }
+  return idx ^ base_idx;
+}
+
 
 /*------------------------------------------------------------------------
  *
@@ -995,6 +1105,7 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
   bitset_t *st[2];
   int num_inputs;
   int sh_outvar;
+  int *is_out = NULL;
   
   num_inputs = get_num_inputs (nl);
   if (num_inputs == 0) {
@@ -1120,7 +1231,6 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
        exactly the complement of this variable
        -- */
 
-    int *is_out;
     MALLOC (is_out, int, _num_outputs);
     for (int i=0; i < _num_outputs; i++) {
       is_out[i] = -1;
@@ -1208,25 +1318,84 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 
     for (int i=0; i < (1 << num_inputs); i++) {
       /* -- current input vector scenario: i -- */
-    
-      for (int j=0; j < num_inputs; j++) {
-	/* -- current bit being checked: j -- */
-	unsigned int opp = i ^ (1 << j);
-
-	if (sh) {
-	  /* st[0], st[1] has pull-up and pull-down */
-
+      if (sh && (is_out[nout] == 0 || is_out[nout] == 1)) {
+	int drive_up = -1;
+	/*-- this output is the state-holding gate --*/
+	if (bitset_tst (st[1], i) && !bitset_tst (st[0], i)) {
+	  drive_up = 1;
 	}
-	else {
-	  /*-- combinational logic --*/
+	else if (bitset_tst (st[0], i) && !bitset_tst (st[1], i)) {
+	  drive_up = 0;
+	}
+
+	if (drive_up != -1) {
+	  /* state-holding output driven high */
+	  printf ("find-sh-case (%d): ", drive_up);
+	  _print_input_case (stdout, a, nl, num_inputs, i);
+	  printf ("\n");
+
+	  for (int j=0; j < num_inputs; j++) {
+	    unsigned int opp = i ^ (1 << j);
+
+	    /* flip bit j: if this turns the gate SH or opp driven,
+	       we have a scenario */
+	    if (!bitset_tst (st[drive_up], opp)) {
+	      if (bitset_tst (st[1-drive_up], opp)) {
+		printf (" flip %d (comb)\n", j);
+	      }
+	      else {
+		int k = find_driven_assignment (st[1-drive_up], st[drive_up],
+						num_inputs, j, (1-((i >> j) & 1)),
+						opp);
+		if (k >= 0) {
+		  printf (" flip %d (sh) ... from ", j);
+		  _print_input_case (stdout, a, nl, num_inputs, k);
+		  printf (" to ");
+		  _print_input_case (stdout, a, nl, num_inputs, opp);
+		  printf ("\n");
+		}
+		else {
+		  k = find_multi_driven_assignment (st[1-drive_up], st[drive_up],
+						    num_inputs, j, (1-((i>>j)&1)), opp);
+		  if (k < 0) {
+
+		    printf (" flip %d (sh) not found\n", j);
+		  }
+		  else {
+		    printf (" flip %d (sh) ... from ", j);
+		    _print_input_case (stdout, a, nl, num_inputs, k);
+		    printf (" to ");
+		    _print_input_case (stdout, a, nl, num_inputs,
+				       k ^ (1 << j));
+		    printf (" to ");
+		    _print_input_case (stdout, a, nl, num_inputs, opp);
+		    printf ("\n");
+		  }
+		}
+	      }
+	    }
+	  }
+	}
+      }
+      else {
+	if (sh) {
+	  warning ("We assume the other outputs are combinational!");
+	}
+	
+	/*-- combinational logic --*/
 	  
+	for (int j=0; j < num_inputs; j++) {
+	  /* -- current bit being checked: j -- */
+	  unsigned int opp = i ^ (1 << j);
+
 	  /* _outvals has truth table for output */
 	  if ((!!bitset_tst (_outvals[nout], i)) !=
 	      (!!bitset_tst (_outvals[nout], opp))) {
-
 	    /* Found transition! Characterize this transition */
-	    
-
+	    printf ("input: %d -> %d : ", (opp >> j) & 1, (i >> j) & 1);
+	    _print_input_case (stdout, a, nl, num_inputs, i);
+	    printf ("; out: %d -> %d\n", !!bitset_tst (_outvals[nout], opp),
+		    !!bitset_tst (_outvals[nout], i));
 	  }
 	}
       }
@@ -1247,39 +1416,86 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
     tab ();
     NLFP (fp, "direction : output;\n");
     NLFP (fp, "function : ");
+    fprintf (fp, "\"");
     if (!sh) {
       int first = 1;
       /*-- print function --*/
-      fprintf (fp, "\"");
       for (int i=0; i < (1 << num_inputs); i++) {
 	if (bitset_tst (_outvals[nout], i)) {
 	  if (!first) {
 	    fprintf (fp, "+");
 	  }
 	  first = 0;
-	  for (int j=0; j < num_inputs; j++) {
-	    int ipin = get_input_pin (nl, j);
-
-	    if (j != 0) {
-	      fprintf (fp, "*");
-	    }
-	    
-	    if (!((i >> j) & 1)) {
-	      fprintf (fp, "!");
-	    }
-	    tmp = nl->bN->ports[ipin].c->toid();
-	    tmp->sPrint (buf, 1024);
-	    delete tmp;
-	    a->mfprintf (fp, "%s", buf);
-	  }
+	  _print_input_case (fp, a, nl, num_inputs, i);
 	}
       }
-      fprintf (fp, "\";\n");
     }
     else {
-      /* XXX: state-holding gate function definition */
-      fprintf (fp, " \" \";\n");
+      int first = 1;
+
+      if (is_out[nout] == 0) {
+	/*-- this output is the state-holding gate --*/
+	for (int i=0; i < (1 << num_inputs); i++) {
+	  if (bitset_tst (st[1], i)) {
+	    if (!first) {
+	      fprintf (fp, "+");
+	    }
+	    first = 0;
+	    _print_input_case (fp, a, nl, num_inputs, i);
+	  }
+	}
+	if (!first) {
+	  fprintf (fp, "+");
+	  first = 0;
+	}
+	a->mfprintf (fp, "%s", buf);
+	fprintf (fp, "*!(");
+	first = 1;
+	for (int i=0; i < (1 << num_inputs); i++) {
+	  if (bitset_tst (st[0], i)) {
+	    if (!first) {
+	      fprintf (fp, "+");
+	    }
+	    first = 0;
+	    _print_input_case (fp, a, nl, num_inputs, i);
+	  }
+	}
+	fprintf (fp, ")");
+      }
+      else if (is_out[nout] == 1) {
+	/*-- this output is the state-holding gate --*/
+	for (int i=0; i < (1 << num_inputs); i++) {
+	  if (bitset_tst (st[0], i)) {
+	    if (!first) {
+	      fprintf (fp, "+");
+	    }
+	    first = 0;
+	    _print_input_case (fp, a, nl, num_inputs, i);
+	  }
+	}
+	if (!first) {
+	  fprintf (fp, "+");
+	}
+	first = 0;
+	a->mfprintf (fp, "%s", buf);
+	fprintf (fp, "*!(");
+	first = 1;
+	for (int i=0; i < (1 << num_inputs); i++) {
+	  if (bitset_tst (st[1], i)) {
+	    if (!first) {
+	      fprintf (fp, "+");
+	    }
+	    first = 0;
+	    _print_input_case (fp, a, nl, num_inputs, i);
+	  }
+	}
+	fprintf (fp, ")");
+      }
+      else {
+	fprintf (fp, " ");
+      }
     }
+    fprintf (fp, "\";\n");
 
     /* -- measurement results -- 
 

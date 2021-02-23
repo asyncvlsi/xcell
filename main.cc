@@ -51,6 +51,32 @@ void untab (void)
 }
 
 
+int is_xyce (void)
+{
+  if (strstr (config_get_string ("xcell.spice_binary"), "Xyce")) {
+    return 1;
+  }
+  return 0;
+}
+
+void _dump_index_table (FILE *fp, int idx, const char *name)
+{
+  double *tab;
+
+  NLFP (fp, "index_%d(\"", idx);
+
+  tab = config_get_table_real (name);
+  
+  for (int i=0; i < config_get_table_size (name); i++) {
+    if (i != 0) {
+      fprintf (fp, ", ");
+    }
+    fprintf (fp, "%g", tab[i]);
+  }
+  fprintf (fp, "\");");
+}
+
+
 int gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
 {
   netlist_t *nl;
@@ -68,12 +94,17 @@ int gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
   fprintf (fp, ".global Vdd\n");
   fprintf (fp, ".global GND\n");
 
-  fprintf (fp, ".param load = 2.2f\n");
+  if (is_xyce()) {
+    fprintf (fp, ".global_param load = 2.2f\n");
+  }
+  else {
+    fprintf (fp, ".param load = 2.2f\n");
+  }
   fprintf (fp, ".param resistor = %g%s\n\n",
 	   config_get_real ("xcell.R_value"),
 	   config_get_string ("xcell.units.resis"));
 
-  fprintf (fp, ".temp %g\n", config_get_real ("xcell.T") - 273.15);
+  //fprintf (fp, ".tnom %g\n", config_get_real ("xcell.T") - 273.15);
 
   /*-- dump subcircuit --*/
   np->Print (fp, p);
@@ -152,6 +183,8 @@ static bitset_t **_outvals; 	// value of outputs, followed by +
 				// _sh_vars
 
 static int _num_outputs;	/* number of outputs */
+
+double *leakage_power;		/* leakage power */
 
 void _add_support_var (netlist_t *nl, ActId *id)
 {
@@ -311,7 +344,8 @@ void print_all_input_cases (FILE *sfp,
   /* -- leakage scenarios -- */
   
   for (int k=0; k < num_inputs; k++) {
-    fprintf (sfp, "Vn%d %s%d 0 PWL (0p 0 1000p 0\n", k, prefix, k);
+    fprintf (sfp, "Vn%d %s%d 0 PWL (0p 0 1000p 0\n",
+	     get_input_pin (nl, k), prefix, get_input_pin (nl,k));
     int tm = 1;
     for (int i=0; i < (1 << num_inputs); i++) {
       if ((i >> k) & 0x1) {
@@ -337,7 +371,8 @@ void print_input_cap_cases (FILE *sfp,
 
   for (int i=0; i < num_inputs; i++) {
 
-    fprintf (sfp, "Vn%d %s%d 0 PWL (0p 0 1000p 0\n", i, prefix, i);
+    fprintf (sfp, "Vn%d %s%d 0 PWL (0p 0 1000p 0\n",
+	     get_input_pin (nl, i), prefix, get_input_pin (nl, i));
     
     /*-- we run input i up and down 2 times, with the others being in
       all possible different states --*/
@@ -637,6 +672,12 @@ int run_leakage_scenarios (FILE *fp,
       fatal_error ("Could not open measurement output file.\n");
     }
   }
+
+  MALLOC (leakage_power, double, (1 << num_inputs));
+  for (int i=0; i < (1 << num_inputs); i++) {
+    leakage_power[i] = 0;
+  }
+  
   while (fgets (buf, 1024, sfp)) {
     double lk;
     char *s = strtok (buf, " \t");
@@ -739,6 +780,9 @@ int run_leakage_scenarios (FILE *fp,
       }
       fprintf (fp, "\";\n");
       NLFP (fp, "value : %g;\n", lk/config_get_real ("xcell.units.power_conv"));
+
+      leakage_power[i] = lk;
+      
       untab();
       NLFP (fp, "}\n");
     }
@@ -982,17 +1026,21 @@ int run_input_cap_scenarios (FILE *fp,
   return 1;
 }
 
-void _print_input_case (FILE *fp, Act *a, netlist_t *nl, int num_inputs, int idx)
+void _print_input_case (FILE *fp, Act *a, netlist_t *nl, int num_inputs, int idx, int skipmask = 0)
 {
   char buf[1024];
   ActId *tmp;
+  int first = 1;
   
   for (int j=0; j < num_inputs; j++) {
+    if (skipmask & (1 << j)) continue;
+    
     int ipin = get_input_pin (nl, j);
     
-    if (j != 0) {
+    if (!first) {
       fprintf (fp, "*");
     }
+    first = 0;
 	    
     if (!((idx >> j) & 1)) {
       fprintf (fp, "!");
@@ -1099,6 +1147,11 @@ struct dynamic_case {
   int in_id;
   int in_init;
   int out_init;
+
+  double *delay;
+  double *transit;
+  double *intpow;
+  
 };
 
 /*------------------------------------------------------------------------
@@ -1115,6 +1168,7 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
   int num_inputs;
   int sh_outvar;
   int *is_out = NULL;
+  char buf[1024];
 
   A_DECL (struct dynamic_case, dyn);
 
@@ -1365,7 +1419,7 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 		A_NEXT (dyn).out_id = nout;
 		A_NEXT (dyn).in_id = j;
 		A_NEXT (dyn).in_init = ((opp >> j) & 1);
-		A_NEXT (dyn).out_init = drive_up ? 0 : 1;
+		A_NEXT (dyn).out_init = (drive_up ? 0 : 1) ^ is_out[nout];
 		A_INC (dyn);
 		
 		//printf (" flip %d (comb)\n", j);
@@ -1383,7 +1437,7 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 		  A_NEXT (dyn).out_id = nout;
 		  A_NEXT (dyn).in_id = j;
 		  A_NEXT (dyn).in_init = ((opp >> j) & 1);
-		  A_NEXT (dyn).out_init = drive_up ? 0 : 1;
+		  A_NEXT (dyn).out_init = (drive_up ? 0 : 1) ^ is_out[nout];
 		  A_INC (dyn);
 		
 		  //printf (" flip %d (sh) ... from ", j);
@@ -1408,7 +1462,7 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 		    A_NEXT (dyn).out_id = nout;
 		    A_NEXT (dyn).in_id = j;
 		    A_NEXT (dyn).in_init = ((opp >> j) & 1);
-		    A_NEXT (dyn).out_init = drive_up ? 0 : 1;
+		    A_NEXT (dyn).out_init = (drive_up ? 0 : 1) ^ is_out[nout];
 		    A_INC (dyn);
 		    
 		    //printf (" flip %d (sh) ... from ", j);
@@ -1480,16 +1534,18 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 
   /* emit waveform for each input */
 
-  int tm = 1;
   double window = config_get_real ("xcell.short_window");
   double vdd = config_get_real ("xcell.Vdd");
   double period = config_get_real ("xcell.period");
   int nslew = config_get_table_size ("xcell.input_trans");
   double *slew_table = config_get_table_real ("xcell.input_trans");
+  int tm;
   
   for (int i=0; i < num_inputs; i++) {
-    fprintf (sfp, "Vn%d p%d 0 PWL (0p 0 1000p 0\n", i, i);
+    fprintf (sfp, "Vn%d p%d 0 PWL (0p 0 1000p 0\n", get_input_pin (nl, i),
+	     get_input_pin (nl, i));
 
+    tm = 1;
     /*-- this has to be done with different input slew --*/
     for (int ns=0; ns < nslew; ns++) {
       for (int j=0; j < A_LEN (dyn); j++) {
@@ -1524,14 +1580,151 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
     fprintf (sfp, "\n");
   }
 
-  fprintf (sfp, "\n.tran 10p %gp\n", tm*period);
-
-  for (int i=0; i < num_inputs; i++) {
-    /* measure output transit time and delay */
-    
-    
+  if (is_xyce()) {
+    fprintf (sfp, "\n.tran 10p %gp\n", tm*period);
+    /* -- sweep load! -- */
+    fprintf (sfp, "\n.step load LIST ");
+    double *load_table = config_get_table_real ("xcell.load");
+    for (int i=0; i < config_get_table_size ("xcell.load"); i++) {
+      fprintf (sfp, " %gf", load_table[i]);
+    }
+    fprintf (sfp, "\n\n");
   }
-  
+  else {
+    fprintf (sfp, "\n.tran 10p %gp ", tm*period);
+    /* -- sweep load! -- */
+    fprintf (sfp, "SWEEP load POI ");
+    double *load_table = config_get_table_real ("xcell.load");
+    for (int i=0; i < config_get_table_size ("xcell.load"); i++) {
+      fprintf (sfp, " %gf", load_table[i]);
+    }
+    fprintf (sfp, "\n\n");
+  }
+
+  /*-- allocate space for dynamic measurements --*/
+
+  int nsweep = config_get_table_size ("xcell.load");
+
+  for (int i=0; i < A_LEN (dyn); i++) {
+    MALLOC (dyn[i].delay, double, nsweep*nslew);
+    MALLOC (dyn[i].transit, double, nsweep*nslew);
+    MALLOC (dyn[i].intpow, double, nsweep*nslew);
+    for (int j=0; j < nsweep*nslew; j++) {
+      dyn[i].delay[j] = 0;
+      dyn[i].transit[j] = 0;
+      dyn[i].intpow[j] = 0;
+    }
+  }
+
+  /* measure output transit time and delay */
+    
+  /*-- this has to be done with different input slew --*/
+  tm = 1;
+  for (int ns=0; ns < nslew; ns++) {
+    for (int j=0; j < A_LEN (dyn); j++) {
+      int k = dyn[j].nidx-1;
+      double off = tm*period + k*window;
+      double st, end;
+
+      /* 
+	 1. measure delay : 50% input to 50% output 
+      */
+      fprintf (sfp, ".measure tran delay_%d_%d trig V(p%d) VAL=%g TD=%gp CROSS=1 targ V(p%d) VAL=%g\n", j, ns, get_input_pin (nl, dyn[j].in_id), vdd*0.5,
+	       off, get_output_pin (nl, dyn[j].out_id), vdd*0.5);
+      /*
+	2. measure output transit time
+      */
+      if (dyn[j].out_init == 0) {
+	st = vdd*config_get_real ("xcell.waveform.rise_low")/100.0;
+	end = vdd*config_get_real ("xcell.waveform.rise_high")/100.0;
+      }
+      else {
+	st = vdd*config_get_real("xcell.waveform.fall_high")/100.0;
+	end = vdd*config_get_real("xcell.waveform.fall_low")/100.0;
+      }
+      fprintf (sfp, "* in[%d] %s; out[%d] %s\n",
+	       dyn[j].in_id, dyn[j].in_init ? "fall" : "rise",
+	       dyn[j].out_id, dyn[j].out_init ? "fall" : "rise");
+      fprintf (sfp, ".measure tran transit_%d_%d trig V(p%d) VAL=%g TD=%gp CROSS=1 targ V(p%d) VAL=%g\n", j, ns, get_output_pin (nl, dyn[j].out_id), st, off,
+	       get_output_pin (nl, dyn[j].out_id), end);
+      
+      /*
+	3. Measure internal power
+      */
+      fprintf (sfp, ".measure tran intpow_%d_%d avg i(Vv1) from %gp to %gp\n",
+	       j, ns, off, off + window);
+      tm++;
+    }
+  }
+
+  fprintf (sfp, "\n.end\n");
+  fclose (sfp);
+
+  snprintf (buf, 1024, "%s _spicedy_.spi > _spicedy_.log 2>&1",
+	    config_get_string ("xcell.spice_binary"));
+  system (buf);
+
+  /* -- open measurements, and save data -- */
+  for (int nload=0; nload < nsweep; nload++) {
+    if (is_xyce()) {
+      snprintf (buf, 1024, "_spicedy_.spi.mt%d", nload);
+    }
+    else {
+      snprintf (buf, 1024, "_spicedy_.mt%d", nload);
+    }
+    
+    sfp = fopen (buf, "r");
+    if (!sfp) {
+      fatal_error ("Could not open measurement output file.\n");
+    }
+
+    /* read this measurement */
+    while (fgets (buf, 1024, sfp)) {
+      double v;
+      char *s = strtok (buf, " \t");
+      int type, off;
+      int i, j;
+      
+      if (strncasecmp (s, "delay_", 6) == 0) {
+	type = 0;
+	off = 6;
+      }
+      else if (strncasecmp (s, "transit_", 8) == 0) {
+	type = 1;
+	off = 8;
+      }
+      else if (strncasecmp (s, "intpow_", 7) == 0) {
+	type = 2;
+	off = 7;
+      }
+      else {
+	fatal_error ("Unknown line: %s", buf);
+      }
+      if (sscanf (s + off, "%d_%d", &i, &j) != 2) {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+      s = strtok (NULL, " \t");
+      if (strcmp (s, "=") != 0) {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+      s = strtok (NULL, " \t");
+      if (sscanf (s, "%lg", &v) != 1) {
+	fatal_error ("Could not parse line: %s", buf);
+      }
+      Assert (0 <= i && i < A_LEN (dyn), "What?");
+      Assert (0 <= j && j < nslew, "What?");
+      if (type == 0) {
+	dyn[i].delay[j+nload*nsweep] = v;
+      }
+      else if (type == 1) {
+	dyn[i].transit[j+nload*nsweep] = v;
+      }
+      else if (type == 2) {
+	dyn[i].intpow[j+nload*nsweep] = -v*vdd;
+      }
+    }
+    fclose (sfp);
+  }
 
   for (int nout=0; nout < _num_outputs; nout++) {
     int pos = get_output_pin (nl, nout);
@@ -1650,21 +1843,206 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 	 }
        }
      */
-    
+    for (int i=0; i < A_LEN (dyn); i++) {
+      ActId *tmp;
+      char buf[1024];
+      int idx_case;
+      
+      if (dyn[i].out_id != nout) continue;
+
+
+      /* -- internal power -- */
+
+      NLFP (fp, "internal_power() {\n");
+      tab();
+
+      NLFP (fp, "related_pin: \"");
+      tmp = nl->bN->ports[get_input_pin (nl, dyn[i].in_id)].c->toid();
+      tmp->sPrint (buf, 1024);
+      delete tmp;
+      a->mfprintf (fp, "%s", buf);
+      fprintf (fp, "\";\n");
+
+      NLFP (fp, "when : \"");
+      idx_case = dyn[i].idx[dyn[i].nidx-1];
+      _print_input_case (fp, a, nl, num_inputs, idx_case, (1 << dyn[i].in_id));
+      fprintf (fp, "\";\n");
+
+      NLFP (fp, "%s_power(power_%dx%d) {\n",
+	    dyn[i].in_init == 0 ? "rise" : "fall",
+	    config_get_table_size ("xcell.input_trans"),
+	    config_get_table_size ("xcell.load"));
+      tab();
+      _dump_index_table (fp, 1, "xcell.input_trans");
+      fprintf (fp, "\n");
+      _dump_index_table (fp, 2, "xcell.load");
+      fprintf (fp, "\n");
+
+      NLFP (fp, "values(\\\n"); tab();
+      for (int j=0; j < nslew; j++) {
+	NLFP (fp, "\"");
+	for (int k=0; k < nsweep; k++) {
+	  double dp;
+	  if (k != 0) {
+	    fprintf (fp, ", ");
+	  }
+	  /*-- XXX: fixme: units, internal power definition --*/
+	  dp = dyn[i].intpow[j+k*nsweep];
+	  dp = dp - leakage_power[idx_case];
+	  dp /= config_get_real ("xcell.units.power_conv");
+	  fprintf (fp, "%g", dp);
+	}
+	fprintf (fp, "\"");
+	if (j != nslew-1) {
+	  fprintf (fp, ",");
+	}
+	fprintf (fp, "\\\n");
+      }
+      untab();
+      NLFP (fp, ");\n");
+
+      untab();
+      NLFP (fp, "}\n");
+      
+      untab();
+      NLFP (fp, "}\n");
+
+
+      NLFP (fp, "timing() {\n");
+      tab();
+
+      NLFP (fp, "related_pin: \"");
+      tmp = nl->bN->ports[get_input_pin (nl, dyn[i].in_id)].c->toid();
+      tmp->sPrint (buf, 1024);
+      delete tmp;
+      a->mfprintf (fp, "%s", buf);
+      fprintf (fp, "\";\n");
+
+      if (dyn[i].in_init == dyn[i].out_init) {
+	NLFP (fp, "timing_sense : positive_unate;\n");
+      }
+      else {
+	NLFP (fp, "timing_sense : negative_unate;\n");
+      }
+
+      NLFP (fp, "when : \"");
+      idx_case = dyn[i].idx[dyn[i].nidx-1];
+      _print_input_case (fp, a, nl, num_inputs, idx_case, (1 << dyn[i].in_id));
+      fprintf (fp, "\";\n");
+
+      /* -- cell rise -- */
+      
+      NLFP (fp, "cell_%s(delay_%dx%d) {\n",
+	    dyn[i].in_init == 0 ? "rise" : "fall",
+	    config_get_table_size ("xcell.input_trans"),
+	    config_get_table_size ("xcell.load"));
+      tab();
+      _dump_index_table (fp, 1, "xcell.input_trans");
+      fprintf (fp, "\n");
+      _dump_index_table (fp, 2, "xcell.load");
+      fprintf (fp, "\n");
+
+      NLFP (fp, "values(\\\n"); tab();
+      for (int j=0; j < nslew; j++) {
+	NLFP (fp, "\"");
+	for (int k=0; k < nsweep; k++) {
+	  double dp;
+	  if (k != 0) {
+	    fprintf (fp, ", ");
+	  }
+	  /*-- XXX: fixme: units, internal power definition --*/
+	  dp = dyn[i].delay[j+k*nsweep];
+	  dp /= config_get_real ("xcell.units.time_conv");
+	  if (dp < 0) {
+	    dp = 0;
+	  }
+	  fprintf (fp, "%g", dp);
+	}
+	fprintf (fp, "\"");
+	if (j != nslew-1) {
+	  fprintf (fp, ",");
+	}
+	fprintf (fp, "\\\n");
+      }
+      untab();
+      NLFP (fp, ");\n");
+
+      untab();
+      NLFP (fp, "}\n");
+
+      /* -- transition time -- */
+
+      NLFP (fp, "%s_transition(delay_%dx%d) {\n",
+	    dyn[i].in_init == 0 ? "rise" : "fall",
+	    config_get_table_size ("xcell.input_trans"),
+	    config_get_table_size ("xcell.load"));
+      tab();
+      _dump_index_table (fp, 1, "xcell.input_trans");
+      fprintf (fp, "\n");
+      _dump_index_table (fp, 2, "xcell.load");
+      fprintf (fp, "\n");
+
+      NLFP (fp, "values(\\\n"); tab();
+      for (int j=0; j < nslew; j++) {
+	NLFP (fp, "\"");
+	for (int k=0; k < nsweep; k++) {
+	  double dp;
+	  if (k != 0) {
+	    fprintf (fp, ", ");
+	  }
+	  /*-- XXX: fixme: units, internal power definition --*/
+	  dp = dyn[i].transit[j+k*nsweep];
+	  dp /= config_get_real ("xcell.units.time_conv");
+	  fprintf (fp, "%g", dp);
+	}
+	fprintf (fp, "\"");
+	if (j != nslew-1) {
+	  fprintf (fp, ",");
+	}
+	fprintf (fp, "\\\n");
+      }
+      untab();
+      NLFP (fp, ");\n");
+
+      untab();
+      NLFP (fp, "}\n");
+
+      
+      untab();
+      NLFP (fp, "}\n");
+    }
+
     untab ();
     NLFP (fp, "}\n");
   }
-  
-  fclose (sfp);
-
 
   if (sh) {
     bitset_free (st[0]);
     bitset_free (st[1]);
   }
 
-#if 0
+#if 1
   unlink ("_spicedy_.spi");
+  unlink ("_spicedy_.log");
+
+  /* Xyce */
+  if (is_xyce()) {
+    for (int i=0; i < config_get_table_size ("xcell.load"); i++) {
+      snprintf (buf, 1024, "_spicedy_.spi.mt%d", i);
+      unlink (buf);
+    }
+    unlink ("_spicedy_.spi.res");
+  }
+  else {
+    for (int i=0; i < config_get_table_size ("xcell.load"); i++) {
+      snprintf (buf, 1024, "_spicedy_.mt%d", i);
+      unlink (buf);
+      snprintf (buf, 1024, "_spicedy_.st%d", i);
+      unlink (buf);
+      snprintf (buf, 1024, "_spicedy_.ic%d", i);
+      unlink (buf);
+    }
+  }
 #endif
 
   A_FREE (dyn);
@@ -1762,27 +2140,14 @@ void lib_emit_template (FILE *fp, const char *name, const char *prefix,
 	config_get_table_size (v_trans),
 	config_get_table_size (v_load));
   tab();
+
   NLFP (fp, "variable_1 : input_net_transition;\n");
   NLFP (fp, "variable_2 : total_output_net_capacitance;\n");
-  NLFP (fp, "index_1(\"");
-  double *dtable = config_get_table_real (v_trans);
-  for (int i=0; i < config_get_table_size (v_trans); i++) {
-    if (i != 0) {
-      fprintf (fp, ", ");
-    }
-    fprintf (fp, "%g", dtable[i]);
-  }
-  fprintf (fp, "\");\n");
+  _dump_index_table (fp, 1, v_trans);
+  fprintf (fp, "\n");
+  _dump_index_table (fp, 2, v_load);
+  fprintf (fp, "\n");
 
-  NLFP (fp, "index_2(\"");
-  dtable = config_get_table_real (v_load);
-  for (int i=0; i < config_get_table_size (v_load); i++) {
-    if (i != 0) {
-      fprintf (fp, ", ");
-    }
-    fprintf (fp, "%g", dtable[i]);
-  }
-  fprintf (fp, "\");\n");
   untab();
   NLFP (fp, "}\n");
 }
@@ -1876,7 +2241,7 @@ void lib_emit_header (FILE *fp, char *name)
 		     "xcell.input_trans", "xcell.load");
 
   lib_emit_template (fp, "power_lut", "power",
-		     "xcell.input_trans_power", "xcell.load_power");
+		     "xcell.input_trans", "xcell.load");
 
 }
 

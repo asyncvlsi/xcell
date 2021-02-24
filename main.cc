@@ -50,6 +50,43 @@ void untab (void)
   tabs--;
 }
 
+void unlink_files (const char *s, const char *ext[])
+{
+  char buf[1024];
+  int i = 0;
+
+  while (ext[i]) {
+    snprintf (buf, 1024, "%s.%s", s, ext[i]);
+    unlink (buf);
+    i++;
+  }
+}
+
+void unlink_generic_trace (const char *s)
+{
+  const char *ext[] = { "spi", "log", "trace", "names", NULL };
+  unlink_files (s, ext);
+}
+
+void unlink_generic (const char *s)
+{
+  const char *ext[] = { "spi", "log", NULL };
+  unlink_files (s, ext);
+}
+
+void unlink_hspice (const char *s)
+{
+  const char *ext[] = { "mt0", "st0", "tr0", "pa0", "ic0", NULL };
+  unlink_files (s, ext);
+}
+
+void unlink_xyce (const char *s)
+{
+  const char *ext[] = { "spi.mt0", "spi.raw", NULL };
+  unlink_files (s, ext);
+}
+
+
 struct Hashtable *parse_measurements (const char *s, const char *param = NULL, int skip = 0)
 {
   FILE *fp;
@@ -875,21 +912,16 @@ int run_leakage_scenarios (FILE *fp,
   }
   hash_free (H);
 
-  unlink ("_spicelk_.spi");
-  unlink ("_spicelk_.log");
-  unlink ("_spicelk_.trace");
-  unlink ("_spicelk_.names");
+  unlink_generic_trace ("_spicelk_");
 
-  /* -- Xyce -- */
-  unlink ("_spicelk_.spi.mt0");
-  unlink ("_spicelk_.spi.raw");
-
-  /* -- hspice -- */
-  unlink ("_spicelk_.mt0");
-  unlink ("_spicelk_.tr0");
-  unlink ("_spicelk_.st0");
-  unlink ("_spicelk_.ic0");
-  unlink ("_spicelk_.pa0");
+  if (is_xyce()) {
+    /* -- Xyce -- */
+    unlink_xyce ("_spicelk_");
+  }
+  else {
+    /* -- hspice -- */
+    unlink_hspice ("_spicelk_");
+  }
 
   A_FREE (outnode);
   
@@ -1071,17 +1103,14 @@ int run_input_cap_scenarios (FILE *fp,
     NLFP (fp, "}\n");
   }
 
-  unlink ("_spicecap_.spi");
-  unlink ("_spicecap_.log");
-
-  /* Xyce */
-  //unlink ("_spicecap_.spi.mt0");
-
-  /* hspice */
-  //unlink ("_spicecap_.mt0");
-  unlink ("_spicecap_.st0");
-  unlink ("_spicecap_.ic0");
-  unlink ("_spicecap_.pa0");
+  unlink_generic ("_spicecap_");
+  
+  if (is_xyce()) {
+    unlink_xyce ("_spicecap_");
+  }
+  else {
+    unlink_hspice ("_spicecap_");
+  }
 
   return 1;
 }
@@ -2137,28 +2166,21 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
     bitset_free (st[1]);
   }
 
-  //unlink ("_spicedy_.spi");
-  unlink ("_spicedy_.log");
+  unlink_generic ("_spicedy_");
 
   /* Xyce */
   if (is_xyce()) {
-    for (int i=0; i < config_get_table_size ("xcell.load"); i++) {
+    unlink_xyce ("_spicedy_");
+
+    /* -- other measurement files -- */
+    for (int i=1; i < config_get_table_size ("xcell.load"); i++) {
       snprintf (buf, 1024, "_spicedy_.spi.mt%d", i);
       unlink (buf);
     }
     unlink ("_spicedy_.spi.res");
   }
   else {
-    for (int i=0; i < config_get_table_size ("xcell.load"); i++) {
-      snprintf (buf, 1024, "_spicedy_.mt%d", i);
-      unlink (buf);
-      snprintf (buf, 1024, "_spicedy_.st%d", i);
-      unlink (buf);
-      snprintf (buf, 1024, "_spicedy_.ic%d", i);
-      unlink (buf);
-      snprintf (buf, 1024, "_spicedy_.pa%d", i);
-      unlink (buf);
-    }
+    unlink_hspice ("_spicedy_");
   }
 
   for (int i=0; i < A_LEN (dyn); i++) {

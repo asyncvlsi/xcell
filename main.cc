@@ -22,11 +22,11 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <math.h>
+#include <string.h>
 #include <config.h>
 #include <atrace.h>
 #include <act/act.h>
 #include <act/passes.h>
-
 
 #define NLFP  line(fp); fprintf
 
@@ -48,6 +48,86 @@ void untab (void)
 {
   Assert (tabs > 0, "Hmm");
   tabs--;
+}
+
+struct Hashtable *parse_measurements (const char *s, const char *param = NULL, int skip = 0)
+{
+  FILE *fp;
+  char buf[1024];
+  struct Hashtable *H;
+  hash_bucket_t *b;
+  int is_skip = 0;
+
+  fp = fopen (s, "r");
+  if (!fp) {
+    return NULL;
+  }
+
+  H = hash_new (8);
+
+  if (skip > 0 && param) {
+    is_skip = 1;
+  }
+  
+  while (fgets (buf, 1024, fp)) {
+    double v;
+    char *s;
+
+    if (buf[0] == '.' || buf[0] == '$' || buf[0] == '#') {
+      continue;
+    }
+    s = strtok (buf, " \t");
+
+    if (!s) {
+      continue;
+    }
+
+    if (is_skip && (strcmp (s, param) == 0)) {
+      if (skip > 0) {
+	skip--;
+	continue;
+      }
+      is_skip = 0;
+    }
+    else if (is_skip) {
+      continue;
+    }
+    else if (param && (strcmp (s, param) == 0)) {
+      fclose (fp);
+      return H;
+    }
+
+    b = hash_add (H, s);
+    b->f = 0.0;
+
+    s = strtok (NULL, " \t");
+
+    if (!s) {
+      hash_delete (H, b->key);
+      continue;
+    }
+    
+    if (strcmp (s, "=") != 0) {
+      hash_delete (H, b->key);
+      continue;
+    }
+
+    s = strtok (NULL, " \t");
+
+    if (!s) {
+      hash_delete (H, b->key);
+      continue;
+    }
+    
+    if (sscanf (s, "%lg", &v) != 1) {
+      hash_delete (H, b->key);
+      continue;
+    }
+    b->f = v;
+  }
+  fclose (fp);
+  
+  return H;
 }
 
 
@@ -80,8 +160,8 @@ void _dump_index_table (FILE *fp, int idx, const char *name)
 int gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
 {
   netlist_t *nl;
-  A_DECL (int, xout);
 
+  A_DECL (int, xout);
   A_INIT (xout);
 
   fprintf (fp, "**************************\n");
@@ -592,7 +672,16 @@ int run_leakage_scenarios (FILE *fp,
     A_NEWM (outnode, name_t *);
     A_NEXT (outnode) = atrace_lookup (tr, outname[i]);
     if (!A_NEXT (outnode)) {
-      printf ("Output node `%s' not found", outname[i]);
+      if (i < num_outputs) {
+         snprintf (buf, 1024, "p%d", i + num_inputs);
+	 A_NEXT (outnode) = atrace_lookup (tr, buf);
+      }
+      if (!A_NEXT (outnode)) {
+         printf ("Output node `%s' not found", outname[i]);
+      }
+      else {
+         A_INC (outnode);
+      }
     }
     else {
       A_INC (outnode);
@@ -604,6 +693,7 @@ int run_leakage_scenarios (FILE *fp,
   }
   
   if (A_LEN (outnode) != A_LEN (outname) || !timenode) {
+    printf ("Hello!\n");
     A_FREE (outnode);
     A_FREE (outname);
     atrace_close (tr);
@@ -665,10 +755,10 @@ int run_leakage_scenarios (FILE *fp,
   /*
     Step 2: leakage measurements
   */
-  sfp = fopen ("_spicelk_.spi.mt0", "r");
-  if (!sfp) {
-    sfp = fopen ("_spicelk_.mt0", "r");
-    if (!sfp) {
+  struct Hashtable *H = parse_measurements ("_spicelk_.spi.mt0");
+  if (!H) {
+    H = parse_measurements ("_spicelk_.mt0");
+    if (!H) {
       fatal_error ("Could not open measurement output file.\n");
     }
   }
@@ -677,23 +767,19 @@ int run_leakage_scenarios (FILE *fp,
   for (int i=0; i < (1 << num_inputs); i++) {
     leakage_power[i] = 0;
   }
-  
-  while (fgets (buf, 1024, sfp)) {
+
+  hash_iter_t hi;
+  hash_bucket_t *b;
+
+  hash_iter_init (H, &hi);
+  while ((b = hash_iter_next (H, &hi))) {
+    int i;
     double lk;
-    char *s = strtok (buf, " \t");
-    if (strncasecmp (s, "leak", 4) == 0) {
-      int i;
-      if (sscanf (s + 5, "%d", &i) != 1) {
-	fatal_error ("Could not parse line: %s", buf);
+    if (strncasecmp (b->key, "leak_", 5) == 0) {
+      if (sscanf (b->key + 5, "%d", &i) != 1) {
+	fatal_error ("Unknown measurement `%s'", b->key);
       }
-      s = strtok (NULL, " \t");
-      if (strcmp (s, "=") != 0) {
-	fatal_error ("Could not parse line: %s", buf);
-      }
-      s = strtok (NULL, " \t");
-      if (sscanf (s, "%lg", &lk) != 1) {
-	fatal_error ("Could not parse line: %s", buf);
-      }
+      lk = b->f;
 
       if (lk < 0) {
 	warning ("%s: measurement failed for leakage, scenario %d (%g)",
@@ -787,8 +873,7 @@ int run_leakage_scenarios (FILE *fp,
       NLFP (fp, "}\n");
     }
   }
-  fclose (sfp);
-
+  hash_free (H);
 
   unlink ("_spicelk_.spi");
   unlink ("_spicelk_.log");
@@ -804,6 +889,7 @@ int run_leakage_scenarios (FILE *fp,
   unlink ("_spicelk_.tr0");
   unlink ("_spicelk_.st0");
   unlink ("_spicelk_.ic0");
+  unlink ("_spicelk_.pa0");
 
   A_FREE (outnode);
   
@@ -874,6 +960,12 @@ int run_input_cap_scenarios (FILE *fp,
   }
 
   fprintf (sfp, ".tran 0.1p %gp\n",  num_inputs * ((1 << (num_inputs-1))) * period + period);
+  if (config_exists ("xcell.extra_sp_txt")) {
+    char **x = config_get_table_string ("xcell.extra_sp_txt");
+    for (int i=0; i < config_get_table_size ("xcell.extra_sp_txt"); i++) {
+      fprintf (sfp, "%s\n", x[i]);
+    }
+  }
   
   fprintf (sfp, "\n.end\n");
   
@@ -898,78 +990,49 @@ int run_input_cap_scenarios (FILE *fp,
     dncnt[i] = 0;
   }
 
-  sfp = fopen ("_spicecap_.spi.mt0", "r");
-  if (!sfp) {
-    sfp = fopen ("_spicecap_.mt0", "r");
-    if (!sfp) {
+  struct Hashtable *H = parse_measurements ("_spicecap_.spi.mt0");
+  if (!H) {
+    H = parse_measurements ("_spicecap_.mt0");
+    if (!H) {
       fatal_error ("Could not open measurement output from simulation.\n");
     }
   }
-  while (fgets (buf, 1024, sfp)) {
+
+  hash_iter_t hi;
+  hash_bucket_t *b;
+
+  hash_iter_init (H, &hi);
+
+  while ((b = hash_iter_next (H, &hi))) {
     int i, j;
     double tm;
-    char *s = strtok (buf, " \t");
-    if (strncasecmp (s, "cap_tup_", 8) == 0) {
-      if (sscanf (s + 8, "%d", &i) != 1) {
-	fatal_error ("Could not parse line: %s", buf);
+    if (strncasecmp (b->key, "cap_tup_", 8) == 0) {
+      if (sscanf (b->key + 8, "%d_%d", &i, &j) != 2) {
+	fatal_error ("Unknown measurement: %s", b->key);
       }
-      j = 8;
-      while (*(s+j) && isdigit (*(s+j))) {
-	j++;
-      }
-      if (*(s+j) != '_') {
-	fatal_error ("Could not parse line: %s", buf);
-      }
-      j++;
-      if (sscanf (s+j, "%d", &j) != 1) {
-	fatal_error ("Could not parse line: %s", buf);
-      }
-      s = strtok (NULL, " \t");
-      if (strcmp (s, "=") != 0) {
-	fatal_error ("Could not parse line: %s", buf);
-      }
-      s = strtok (NULL, " \t");
-      if (sscanf (s, "%lg", &tm) != 1) {
-	fatal_error ("Could not parse line: %s", buf);
-      }
-
+      tm = b->f;
       if (tm < 0) {
-	warning ("%s: measurement failed: time=%g for input cap measurement %d_%d",
+	warning ("%s: negative input cap measurement %d_%d",
 		 p->getName(), i, j);
       }
-
       time_up[i] += tm;
       upcnt[i]++;
     }
-    else if (strncasecmp (s, "cap_tdn_", 8) == 0) {
-      if (sscanf (s + 8, "%d", &i) != 1) {
-	fatal_error ("Could not parse line: %s", buf);
+    else if (strncasecmp (b->key, "cap_tdn_", 8) == 0) {
+      if (sscanf (b->key + 8, "%d_%d", &i, &j) != 2) {
+	fatal_error ("Unknown measurement: %s", b->key);
       }
-      j = 8;
-      while (*(s+j) && isdigit (*(s+j))) {
-	j++;
+      tm = b->f;
+      if (tm < 0) {
+	warning ("%s: negative input cap measurement %d_%d",
+		 p->getName(), i, j);
       }
-      if (*(s+j) != '_') {
-	fatal_error ("Could not parse line: %s", buf);
-      }
-      j++;
-      if (sscanf (s+j, "%d", &j) != 1) {
-	fatal_error ("Could not parse line: %s", buf);
-      }
-      s = strtok (NULL, " \t");
-      if (strcmp (s, "=") != 0) {
-	fatal_error ("Could not parse line: %s", buf);
-      }
-      s = strtok (NULL, " \t");
-      if (sscanf (s, "%lg", &tm) != 1) {
-	fatal_error ("Could not parse line: %s", buf);
-      }
-
       time_dn[i] += tm;
       dncnt[i]++;
     }
   }
-  fclose (sfp);
+
+  hash_free (H);
 
   for (int i=0; i < num_inputs; i++) {
     if (upcnt[i] != dncnt[i]) {
@@ -1012,12 +1075,13 @@ int run_input_cap_scenarios (FILE *fp,
   unlink ("_spicecap_.log");
 
   /* Xyce */
-  unlink ("_spicecap_.spi.mt0");
+  //unlink ("_spicecap_.spi.mt0");
 
   /* hspice */
-  unlink ("_spicecap_.mt0");
+  //unlink ("_spicecap_.mt0");
   unlink ("_spicecap_.st0");
   unlink ("_spicecap_.ic0");
+  unlink ("_spicecap_.pa0");
 
   return 1;
 }
@@ -1605,13 +1669,21 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
   else {
     fprintf (sfp, "\n.tran 0.1p %gp ", tm*period);
     /* -- sweep load! -- */
-    fprintf (sfp, "SWEEP load POI ");
+    fprintf (sfp, "SWEEP load POI %d", config_get_table_size ("xcell.load"));
     double *load_table = config_get_table_real ("xcell.load");
     for (int i=0; i < config_get_table_size ("xcell.load"); i++) {
       fprintf (sfp, " %gf", load_table[i]);
     }
     fprintf (sfp, "\n\n");
   }
+
+  if (config_exists ("xcell.extra_sp_txt")) {
+    char **x = config_get_table_string ("xcell.extra_sp_txt");
+    for (int i=0; i < config_get_table_size ("xcell.extra_sp_txt"); i++) {
+      fprintf (sfp, "%s\n", x[i]);
+    }
+  }
+  
 
   /*-- allocate space for dynamic measurements --*/
 
@@ -1681,24 +1753,35 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 
   /* -- open measurements, and save data -- */
   for (int nload=0; nload < nsweep; nload++) {
+    struct Hashtable *H;
+    hash_bucket_t *b;
+    hash_iter_t hi;
+    
     if (is_xyce()) {
       snprintf (buf, 1024, "_spicedy_.spi.mt%d", nload);
     }
     else {
-      snprintf (buf, 1024, "_spicedy_.mt%d", nload);
-    }
-    
-    sfp = fopen (buf, "r");
-    if (!sfp) {
-      fatal_error ("Could not open measurement output file.\n");
+      snprintf (buf, 1024, "_spicedy_.mt0");
     }
 
-    /* read this measurement */
-    while (fgets (buf, 1024, sfp)) {
-      double v;
-      char *s = strtok (buf, " \t");
+    if (is_xyce()) {
+      H = parse_measurements (buf);
+    }
+    else {
+      H = parse_measurements (buf, "load", nload);
+    }
+    if (!H) {
+      fatal_error ("Could not open measurement output file %s.\n", buf);
+    }
+
+
+    hash_iter_init (H, &hi);
+
+    while ((b = hash_iter_next (H, &hi))) {
+      char *s = b->key;
       int type, off;
       int i, j;
+      double v;
       
       if (strncasecmp (s, "delay_", 6) == 0) {
 	type = 0;
@@ -1717,19 +1800,13 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 	off = 9;
       }
       else {
-	fatal_error ("Unknown line: %s", buf);
+	continue;
       }
       if (sscanf (s + off, "%d_%d", &i, &j) != 2) {
 	fatal_error ("Could not parse line: %s", buf);
       }
-      s = strtok (NULL, " \t");
-      if (strcmp (s, "=") != 0) {
-	fatal_error ("Could not parse line: %s", buf);
-      }
-      s = strtok (NULL, " \t");
-      if (sscanf (s, "%lg", &v) != 1) {
-	fatal_error ("Could not parse line: %s", buf);
-      }
+      v = b->f;
+      
       Assert (0 <= i && i < A_LEN (dyn), "What?");
       Assert (0 <= j && j < nslew, "What?");
 
@@ -1758,7 +1835,7 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 	dyn[i].intpow[j+nload*nsweep] = -v*vdd;
       }
     }
-    fclose (sfp);
+    hash_free (H);
   }
 
   for (int nout=0; nout < _num_outputs; nout++) {
@@ -2078,6 +2155,8 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
       snprintf (buf, 1024, "_spicedy_.st%d", i);
       unlink (buf);
       snprintf (buf, 1024, "_spicedy_.ic%d", i);
+      unlink (buf);
+      snprintf (buf, 1024, "_spicedy_.pa%d", i);
       unlink (buf);
     }
   }

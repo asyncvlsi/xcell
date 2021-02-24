@@ -139,7 +139,7 @@ int gen_spice_header (FILE *fp, Act *a, ActNetlistPass *np, Process *p)
 
   /*-- load cap on output that is swept --*/
   for (int i=0; i < A_LEN (xout); i++) {
-    fprintf (fp, "Clc%d p%d 0 load\n\n", i, xout[i]);
+    fprintf (fp, "Clc%d p%d GND load\n\n", i, xout[i]);
   }
   A_FREE (xout);
 
@@ -484,7 +484,7 @@ int run_leakage_scenarios (FILE *fp,
     tm++;
   }
 
-  fprintf (sfp, ".tran 10p %gp\n", tm*period);
+  fprintf (sfp, ".tran 0.1p %gp\n", tm*period);
   if (config_exists ("xcell.extra_sp_txt")) {
     char **x = config_get_table_string ("xcell.extra_sp_txt");
     for (int i=0; i < config_get_table_size ("xcell.extra_sp_txt"); i++) {
@@ -789,7 +789,7 @@ int run_leakage_scenarios (FILE *fp,
   }
   fclose (sfp);
 
-#if 1
+
   unlink ("_spicelk_.spi");
   unlink ("_spicelk_.log");
   unlink ("_spicelk_.trace");
@@ -804,7 +804,6 @@ int run_leakage_scenarios (FILE *fp,
   unlink ("_spicelk_.tr0");
   unlink ("_spicelk_.st0");
   unlink ("_spicelk_.ic0");
-#endif
 
   A_FREE (outnode);
   
@@ -874,7 +873,7 @@ int run_input_cap_scenarios (FILE *fp,
     }
   }
 
-  fprintf (sfp, ".tran 10p %gp\n",  num_inputs * ((1 << (num_inputs-1))) * period + period);
+  fprintf (sfp, ".tran 0.1p %gp\n",  num_inputs * ((1 << (num_inputs-1))) * period + period);
   
   fprintf (sfp, "\n.end\n");
   
@@ -1009,7 +1008,6 @@ int run_input_cap_scenarios (FILE *fp,
     NLFP (fp, "}\n");
   }
 
-#if 1
   unlink ("_spicecap_.spi");
   unlink ("_spicecap_.log");
 
@@ -1020,8 +1018,6 @@ int run_input_cap_scenarios (FILE *fp,
   unlink ("_spicecap_.mt0");
   unlink ("_spicecap_.st0");
   unlink ("_spicecap_.ic0");
-#endif
-  
 
   return 1;
 }
@@ -1540,10 +1536,18 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
   int nslew = config_get_table_size ("xcell.input_trans");
   double *slew_table = config_get_table_real ("xcell.input_trans");
   int tm;
-  
+
+  if (A_LEN (dyn) == 0) {
+    warning ("Cell characterization failed; no arcs detected?");
+    fclose (sfp);
+    unlink ("_spicedy_.spi");
+    return 0;
+  }
+
   for (int i=0; i < num_inputs; i++) {
-    fprintf (sfp, "Vn%d p%d 0 PWL (0p 0 1000p 0\n", get_input_pin (nl, i),
-	     get_input_pin (nl, i));
+    fprintf (sfp, "Vn%d p%d 0 PWL (0p 0 1000p %g\n", get_input_pin (nl, i),
+	     get_input_pin (nl, i),
+	     ((dyn[0].idx[0] >> i) & 1) ? vdd : 0.0);
 
     tm = 1;
     /*-- this has to be done with different input slew --*/
@@ -1553,7 +1557,8 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 	  double val = ((dyn[j].idx[k] >> i) & 1) ? vdd : 0.0;
 
 	  if (k != (dyn[j].nidx-1) || i != (dyn[j].in_id)) {
-	    fprintf (sfp, "+%gp %g %gp %g\n", tm*period + 1 + k*window, val,
+	    fprintf (sfp, "+%gp %g %gp %g\n", tm*period +
+		     0.25*window + k*window, val,
 		     tm*period + (k+1)*window, val);
 	  }
 	  else {
@@ -1566,7 +1571,7 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 	      correction = (config_get_real ("xcell.waveform.fall_high") -
 			    config_get_real ("xcell.waveform.fall_low"))/100.0;
 	    }
-	    fprintf (sfp, "+%gp %g\n", tm*period + k*window + slew_table[ns]/correction, val);
+	    fprintf (sfp, "+%gp %g %gp %g\n", tm*period + k*window + slew_table[ns]/correction, val, tm*period + (k+1)*window, val);
 
 	    if (slew_table[ns]/correction >= window) {
 	      warning ("Window is too small; needs to be at least %g\n",
@@ -1581,7 +1586,14 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
   }
 
   if (is_xyce()) {
-    fprintf (sfp, "\n.tran 10p %gp\n", tm*period);
+    fprintf (sfp, "\n.tran 0.1p %gp\n", tm*period);
+#if 0
+    fprintf (sfp, "\n.print tran");
+    for (int i=0; i < num_inputs + _num_outputs; i++) {
+      fprintf (sfp, " V(p%d)", i);
+    }
+    fprintf (sfp, "\n");
+#endif
     /* -- sweep load! -- */
     fprintf (sfp, "\n.step load LIST ");
     double *load_table = config_get_table_real ("xcell.load");
@@ -1591,7 +1603,7 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
     fprintf (sfp, "\n\n");
   }
   else {
-    fprintf (sfp, "\n.tran 10p %gp ", tm*period);
+    fprintf (sfp, "\n.tran 0.1p %gp ", tm*period);
     /* -- sweep load! -- */
     fprintf (sfp, "SWEEP load POI ");
     double *load_table = config_get_table_real ("xcell.load");
@@ -1631,6 +1643,9 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
       */
       fprintf (sfp, ".measure tran delay_%d_%d trig V(p%d) VAL=%g TD=%gp CROSS=1 targ V(p%d) VAL=%g\n", j, ns, get_input_pin (nl, dyn[j].in_id), vdd*0.5,
 	       off, get_output_pin (nl, dyn[j].out_id), vdd*0.5);
+
+      fprintf (sfp, ".measure tran negdelay_%d_%d trig V(p%d) VAL=%g TD=%gp CROSS=1 targ V(p%d) VAL=%g\n", j, ns, get_output_pin (nl, dyn[j].out_id), vdd*0.5,
+	       off, get_input_pin (nl, dyn[j].in_id), vdd*0.5);
       /*
 	2. measure output transit time
       */
@@ -1697,6 +1712,10 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 	type = 2;
 	off = 7;
       }
+      else if (strncasecmp (s, "negdelay_", 9) == 0) {
+	type = 3;
+	off = 9;
+      }
       else {
 	fatal_error ("Unknown line: %s", buf);
       }
@@ -1713,11 +1732,27 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
       }
       Assert (0 <= i && i < A_LEN (dyn), "What?");
       Assert (0 <= j && j < nslew, "What?");
-      if (type == 0) {
-	dyn[i].delay[j+nload*nsweep] = v;
+
+      if (v == -1) {
+	/* -- measurement error -- */
+	continue;
+      }
+
+      if (type == 0 || type == 3) {
+	if (fabs(v - window*config_get_real("xcell.units.time_conv")) >
+	    fabs(v)) {
+	  if (type == 0) {
+	    dyn[i].delay[j+nload*nsweep] = v;
+	  }
+	  else {
+	    dyn[i].delay[j+nload*nsweep] = -v;
+	  }
+	  //printf ("[%d] delay %d %d = %g\n", type, i, j, v/1e-12);
+	}
       }
       else if (type == 1) {
 	dyn[i].transit[j+nload*nsweep] = v;
+	//printf ("   transit %d %d = %g\n", i, j, v/1e-12);
       }
       else if (type == 2) {
 	dyn[i].intpow[j+nload*nsweep] = -v*vdd;
@@ -1863,10 +1898,12 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
       a->mfprintf (fp, "%s", buf);
       fprintf (fp, "\";\n");
 
-      NLFP (fp, "when : \"");
       idx_case = dyn[i].idx[dyn[i].nidx-1];
-      _print_input_case (fp, a, nl, num_inputs, idx_case, (1 << dyn[i].in_id));
-      fprintf (fp, "\";\n");
+      if (num_inputs > 1) {
+	NLFP (fp, "when : \"");
+	_print_input_case (fp, a, nl, num_inputs, idx_case, (1 << dyn[i].in_id));
+	fprintf (fp, "\";\n");
+      }
 
       NLFP (fp, "%s_power(power_%dx%d) {\n",
 	    dyn[i].in_init == 0 ? "rise" : "fall",
@@ -1925,10 +1962,12 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 	NLFP (fp, "timing_sense : negative_unate;\n");
       }
 
-      NLFP (fp, "when : \"");
       idx_case = dyn[i].idx[dyn[i].nidx-1];
-      _print_input_case (fp, a, nl, num_inputs, idx_case, (1 << dyn[i].in_id));
-      fprintf (fp, "\";\n");
+      if (num_inputs > 1) {
+	NLFP (fp, "when : \"");
+	_print_input_case (fp, a, nl, num_inputs, idx_case, (1 << dyn[i].in_id));
+	fprintf (fp, "\";\n");
+      }
 
       /* -- cell rise -- */
       
@@ -2021,8 +2060,7 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
     bitset_free (st[1]);
   }
 
-#if 1
-  unlink ("_spicedy_.spi");
+  //unlink ("_spicedy_.spi");
   unlink ("_spicedy_.log");
 
   /* Xyce */
@@ -2043,7 +2081,12 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
       unlink (buf);
     }
   }
-#endif
+
+  for (int i=0; i < A_LEN (dyn); i++) {
+    FREE (dyn[i].delay);
+    FREE (dyn[i].transit);
+    FREE (dyn[i].intpow);
+  }  
 
   A_FREE (dyn);
   
@@ -2265,6 +2308,8 @@ int main (int argc, char **argv)
   }
   a = new Act (argv[1]);
   a->Expand ();
+
+  config_set_default_int ("net.emit_parasitics", 1);
 
   ActCellPass *cp = new ActCellPass (a);
 

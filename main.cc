@@ -50,6 +50,19 @@ void untab (void)
   tabs--;
 }
 
+int is_xyce (void)
+{
+  if (strstr (config_get_string ("xcell.spice_binary"), "Xyce")) {
+    return 1;
+  }
+  return 0;
+}
+
+int is_hspice (void)
+{
+  return !is_xyce();
+}
+
 void unlink_files (const char *s, const char *ext[])
 {
   char buf[1024];
@@ -62,18 +75,6 @@ void unlink_files (const char *s, const char *ext[])
   }
 }
 
-void unlink_generic_trace (const char *s)
-{
-  const char *ext[] = { "spi", "log", "trace", "names", NULL };
-  unlink_files (s, ext);
-}
-
-void unlink_generic (const char *s)
-{
-  const char *ext[] = { "spi", "log", NULL };
-  unlink_files (s, ext);
-}
-
 void unlink_hspice (const char *s)
 {
   const char *ext[] = { "mt0", "st0", "tr0", "pa0", "ic0", NULL };
@@ -83,6 +84,27 @@ void unlink_hspice (const char *s)
 void unlink_xyce (const char *s)
 {
   const char *ext[] = { "spi.mt0", "spi.raw", NULL };
+  unlink_files (s, ext);
+}
+
+void unlink_generic (const char *s)
+{
+  const char *ext[] = { "spi", "log", NULL };
+  unlink_files (s, ext);
+
+  if (is_xyce ()) {
+    unlink_xyce (s);
+  }
+  else if (is_hspice()) {
+    unlink_hspice (s);
+  }
+}
+
+void unlink_generic_trace (const char *s)
+{
+  const char *ext[] = { "trace", "names", NULL };
+
+  unlink_generic (s);
   unlink_files (s, ext);
 }
 
@@ -168,13 +190,6 @@ struct Hashtable *parse_measurements (const char *s, const char *param = NULL, i
 }
 
 
-int is_xyce (void)
-{
-  if (strstr (config_get_string ("xcell.spice_binary"), "Xyce")) {
-    return 1;
-  }
-  return 0;
-}
 
 void _dump_index_table (FILE *fp, int idx, const char *name)
 {
@@ -602,13 +617,16 @@ int run_leakage_scenarios (FILE *fp,
   }
 
   fprintf (sfp, ".tran 0.1p %gp\n", tm*period);
-  if (config_exists ("xcell.extra_sp_txt")) {
-    char **x = config_get_table_string ("xcell.extra_sp_txt");
-    for (int i=0; i < config_get_table_size ("xcell.extra_sp_txt"); i++) {
-      fprintf (sfp, "%s\n", x[i]);
-    }
+
+  if (is_hspice()) {
+    fprintf (sfp, ".options post post_version=9601\n");
   }
-  fprintf (sfp, ".print tran %s", config_get_string ("xcell.extra_print_stmt"));
+  
+  fprintf (sfp, ".print tran");
+  if (is_xyce()) {
+    fprintf (sfp, " format=raw");
+  }
+  
   /* print voltages */
   char bufout[1024];
 
@@ -914,15 +932,6 @@ int run_leakage_scenarios (FILE *fp,
 
   unlink_generic_trace ("_spicelk_");
 
-  if (is_xyce()) {
-    /* -- Xyce -- */
-    unlink_xyce ("_spicelk_");
-  }
-  else {
-    /* -- hspice -- */
-    unlink_hspice ("_spicelk_");
-  }
-
   A_FREE (outnode);
   
   return 1;
@@ -1105,13 +1114,6 @@ int run_input_cap_scenarios (FILE *fp,
 
   unlink_generic ("_spicecap_");
   
-  if (is_xyce()) {
-    unlink_xyce ("_spicecap_");
-  }
-  else {
-    unlink_hspice ("_spicecap_");
-  }
-
   return 1;
 }
 
@@ -2168,19 +2170,14 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 
   unlink_generic ("_spicedy_");
 
-  /* Xyce */
+  /* Xyce creates multiple measurement files */
   if (is_xyce()) {
-    unlink_xyce ("_spicedy_");
-
     /* -- other measurement files -- */
     for (int i=1; i < config_get_table_size ("xcell.load"); i++) {
       snprintf (buf, 1024, "_spicedy_.spi.mt%d", i);
       unlink (buf);
     }
     unlink ("_spicedy_.spi.res");
-  }
-  else {
-    unlink_hspice ("_spicedy_");
   }
 
   for (int i=0; i < A_LEN (dyn); i++) {

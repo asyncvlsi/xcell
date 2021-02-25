@@ -620,6 +620,7 @@ int run_leakage_scenarios (FILE *fp,
 
   if (is_hspice()) {
     fprintf (sfp, ".options post post_version=9601\n");
+    fprintf (sfp, ".options measform=2\n");
   }
   
   fprintf (sfp, ".print tran");
@@ -1001,13 +1002,10 @@ int run_input_cap_scenarios (FILE *fp,
   }
 
   fprintf (sfp, ".tran 0.1p %gp\n",  num_inputs * ((1 << (num_inputs-1))) * period + period);
-  if (config_exists ("xcell.extra_sp_txt")) {
-    char **x = config_get_table_string ("xcell.extra_sp_txt");
-    for (int i=0; i < config_get_table_size ("xcell.extra_sp_txt"); i++) {
-      fprintf (sfp, "%s\n", x[i]);
-    }
+  if (is_hspice()) {
+    fprintf (sfp, ".options measform=2\n");
   }
-  
+
   fprintf (sfp, "\n.end\n");
   
   fclose (sfp);
@@ -1697,8 +1695,9 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
     }
     fprintf (sfp, "\n\n");
   }
-  else {
+  else if (is_hspice()) {
     fprintf (sfp, "\n.tran 0.1p %gp ", tm*period);
+
     /* -- sweep load! -- */
     fprintf (sfp, "SWEEP load POI %d", config_get_table_size ("xcell.load"));
     double *load_table = config_get_table_real ("xcell.load");
@@ -1706,15 +1705,11 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
       fprintf (sfp, " %gf", load_table[i]);
     }
     fprintf (sfp, "\n\n");
+    fprintf (sfp, ".options measform=2\n");
   }
-
-  if (config_exists ("xcell.extra_sp_txt")) {
-    char **x = config_get_table_string ("xcell.extra_sp_txt");
-    for (int i=0; i < config_get_table_size ("xcell.extra_sp_txt"); i++) {
-      fprintf (sfp, "%s\n", x[i]);
-    }
+  else {
+    fatal_error ("What?");
   }
-  
 
   /*-- allocate space for dynamic measurements --*/
 

@@ -1,0 +1,4 @@
+*
+* Include .lib for all the devices
+*
+.lib 'some_path_here' TT

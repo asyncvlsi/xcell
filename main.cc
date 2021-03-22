@@ -1845,20 +1845,20 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 	if (fabs(v - window*config_get_real("xcell.units.time_conv")) >
 	    fabs(v)) {
 	  if (type == 0) {
-	    dyn[i].delay[j+nload*nsweep] = v;
+	    dyn[i].delay[j+nload*nslew] = v;
 	  }
 	  else {
-	    dyn[i].delay[j+nload*nsweep] = -v;
+	    dyn[i].delay[j+nload*nslew] = -v;
 	  }
 	  //printf ("[%d] delay %d %d = %g\n", type, i, j, v/1e-12);
 	}
       }
       else if (type == 1) {
-	dyn[i].transit[j+nload*nsweep] = v;
+	dyn[i].transit[j+nload*nslew] = v;
 	//printf ("   transit %d %d = %g\n", i, j, v/1e-12);
       }
       else if (type == 2) {
-	dyn[i].intpow[j+nload*nsweep] = -v*vdd;
+	dyn[i].intpow[j+nload*nslew] = -v*vdd;
       }
     }
     hash_free (H);
@@ -2027,7 +2027,7 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 	    fprintf (fp, ", ");
 	  }
 	  /*-- XXX: fixme: units, internal power definition --*/
-	  dp = dyn[i].intpow[j+k*nsweep];
+	  dp = dyn[i].intpow[j + k*nslew];
 	  dp = dp - leakage_power[idx_case];
 	  dp /= config_get_real ("xcell.units.power_conv");
 	  fprintf (fp, "%g", dp);
@@ -2093,7 +2093,7 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 	    fprintf (fp, ", ");
 	  }
 	  /*-- XXX: fixme: units, internal power definition --*/
-	  dp = dyn[i].delay[j+k*nsweep];
+	  dp = dyn[i].delay[j+k*nslew];
 	  dp /= config_get_real ("xcell.units.time_conv");
 	  if (dp < 0) {
 	    dp = 0;
@@ -2133,7 +2133,7 @@ int run_dynamic (FILE *fp, Act *a, ActNetlistPass *np, netlist_t *nl,
 	    fprintf (fp, ", ");
 	  }
 	  /*-- XXX: fixme: units, internal power definition --*/
-	  dp = dyn[i].transit[j+k*nsweep];
+	  dp = dyn[i].transit[j+k*nslew];
 	  dp /= config_get_real ("xcell.units.time_conv");
 	  fprintf (fp, "%g", dp);
 	}

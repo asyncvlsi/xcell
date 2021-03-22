@@ -1,0 +1,27 @@
+namespace mycells {
+
+export defcell cell0 (bool? in[3]; bool! out)
+{
+prs * {
+in[0]<40>&in[1]<20>&in[2] -> out-
+~in[0]<4>|~in[1]<30>&~in[2] -> out+
+}
+}
+
+export defcell cell1 (bool? in[2]; bool! out)
+{
+prs * {
+in[0]<4>|in[1]<10> -> out-
+~in[0]<45>&~in[1]<30> -> out+
+}
+}
+
+}
+
+defproc characterize()
+{
+  mycells::cell0 g1;
+  mycells::cell1 g2;
+}
+
+characterize c;

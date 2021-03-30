@@ -23,8 +23,8 @@
 #include <unistd.h>
 #include <math.h>
 #include <string.h>
-#include <config.h>
-#include <atrace.h>
+#include <common/config.h>
+#include <common/atrace.h>
 #include <act/act.h>
 #include <act/passes.h>
 
@@ -2272,12 +2272,17 @@ int run_spice (FILE *lfp, Act *a, ActNetlistPass *np, Process *p)
 void lib_emit_template (FILE *fp, const char *name, const char *prefix,
 			const char *v_trans, const char *v_load)
 {
-  NLFP (fp, "%s_template(%s_%dx%d) {\n", name,  prefix, 
+  NLFP (fp, "%s_template (%s_%dx%d) {\n", name,  prefix, 
 	config_get_table_size (v_trans),
 	config_get_table_size (v_load));
   tab();
 
-  NLFP (fp, "variable_1 : input_net_transition;\n");
+  if (strcmp (prefix, "power") == 0) {
+    NLFP (fp, "variable_1 : input_transition_time;\n");
+  }
+  else {
+    NLFP (fp, "variable_1 : input_net_transition;\n");
+  }
   NLFP (fp, "variable_2 : total_output_net_capacitance;\n");
   _dump_index_table (fp, 1, v_trans);
   fprintf (fp, "\n");
@@ -2314,11 +2319,11 @@ void lib_emit_header (FILE *fp, char *name)
   NLFP (fp, "nom_voltage : %g;\n", config_get_real ("xcell.Vdd"));
   NLFP (fp, "nom_temperature : %g;\n", config_get_real ("xcell.T"));
 
-  NLFP (fp, "time_unit : \"1%ss\";\n", config_get_string ("xcell.units.time"));
-  NLFP (fp, "voltage_unit : \"1V\";\n");
-  NLFP (fp, "current_unit : \"1%sA\";\n", config_get_string ("xcell.units.current"));
+  NLFP (fp, "time_unit : 1%ss;\n", config_get_string ("xcell.units.time"));
+  NLFP (fp, "voltage_unit : 1V;\n");
+  NLFP (fp, "current_unit : 1%sA;\n", config_get_string ("xcell.units.current"));
   NLFP (fp, "pulling_resistance_unit : \"1kohm\";\n");
-  NLFP (fp, "capacitive_load_unit (1, \"%sF\");\n", config_get_string ("xcell.units.cap"));
+  NLFP (fp, "capacitive_load_unit (1, %sF);\n", config_get_string ("xcell.units.cap"));
   NLFP (fp, "leakage_power_unit : \"1%sW\";\n", config_get_string ("xcell.units.power"));
   NLFP (fp, "internal_power_unit : \"1fJ\";\n");
 
@@ -2327,7 +2332,6 @@ void lib_emit_header (FILE *fp, char *name)
   NLFP (fp, "default_inout_pin_cap : 0.01;\n");
   NLFP (fp, "default_input_pin_cap : 0.01;\n");
   NLFP (fp, "default_output_pin_cap : 0;\n");
-  NLFP (fp, "default_fanout_load : 1;\n");
   
   NLFP (fp, "input_threshold_pct_fall : 50;\n");
   NLFP (fp, "input_threshold_pct_rise : 50;\n");
@@ -2349,6 +2353,10 @@ void lib_emit_header (FILE *fp, char *name)
   NLFP (fp, "default_max_transition : %g;\n",
 	config_get_real ("xcell.default_max_transition_time"));
 
+
+  NLFP (fp, "voltage_map(Vdd, %g);\n", config_get_real ("xcell.Vdd"));
+  NLFP (fp, "voltage_map(GND, 0.0);\n");
+
   /* -- operating conditions -- */
   char **table = config_get_table_string ("xcell.corners");
   NLFP (fp, "operating_conditions(\"%s\") {\n", table[0]);
@@ -2363,7 +2371,7 @@ void lib_emit_header (FILE *fp, char *name)
   NLFP (fp, "default_operating_conditions : typical;\n");
 
   /* -- wire load -- */
-  NLFP (fp,"wire_load(\"wlm1\") {\n");
+  NLFP (fp,"wire_load_table(\"wlm1\") {\n");
   tab();
   for (int i=0; i < 6; i++) {
     NLFP (fp, "fanout_capacitance(%d, %d);\n", i, i);
@@ -2468,12 +2476,14 @@ int main (int argc, char **argv)
       NLFP (fp, "pg_pin(GND) {\n");
       tab();
       NLFP (fp, "pg_type : primary_ground;\n");
+      NLFP (fp, "voltage_name : GND;\n");
       untab();
       NLFP (fp, "}\n");
     
       NLFP (fp, "pg_pin(Vdd) {\n");
       tab();
       NLFP (fp, "pg_type : primary_power;\n");
+      NLFP (fp, "voltage_name : Vdd;\n");
       untab();
       NLFP (fp, "}\n");
 

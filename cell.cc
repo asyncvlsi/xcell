@@ -178,10 +178,18 @@ Cell::Cell (Liberty *l, Process *p)
   _lfp = l->_lfp;
   A_INIT (_sh_vars);
   _num_inputs = 0;
+  is_stateholding = NULL;
+  _outvals = NULL;
+  _tt[0] = NULL;
+  _tt[1] = NULL;
+  leakage_power = NULL;
+  time_up = NULL;
+  time_dn = NULL;
   is_out = NULL;
   st[0] = NULL;
   st[1] = NULL;
-  is_stateholding = NULL;
+  A_INIT (dyn);
+
   
   ActPass *ap = a->pass_find ("prs2net");
   if (!ap) {
@@ -199,7 +207,6 @@ Cell::Cell (Liberty *l, Process *p)
   }
 
   printf ("Cell: %s\n", p->getName());
-
 
   for (int i=0; i < A_LEN (nl->bN->ports); i++) {
     if (nl->bN->ports[i].omit) continue;
@@ -258,10 +265,6 @@ Cell::Cell (Liberty *l, Process *p)
     _build_truth_table (is_stateholding->v->e_up, 1);
     _build_truth_table (is_stateholding->v->e_dn, 0);
   }
-
-  time_up = NULL;
-  time_dn = NULL;
-  A_INIT (dyn);
 }
 
 void Cell::_printHeader ()
@@ -781,6 +784,13 @@ int Cell::_gen_spice_header (FILE *fp)
   fprintf (fp, ".param resistor = %g%s\n\n",
 	   config_get_real ("xcell.R_value"),
 	   config_get_string ("xcell.units.resis"));
+
+  if (is_xyce()) {
+    fprintf (fp, ".options DEVICE TNOM=%g\n", config_get_real ("xcell.T") - 273.15);
+  }
+  else {
+    fprintf (fp, ".options TNOM=%g\n", config_get_real ("xcell.T") - 273);
+  }
 
   /*-- dump subcircuit --*/
   np->Print (fp, _p);

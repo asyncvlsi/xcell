@@ -1162,8 +1162,8 @@ void Cell::_emit_input_cap ()
     a->mfprintf (_lfp, "%s", buf);  fprintf (_lfp, ") {\n");
     _l->_tab();
     CNLFP (_lfp, "direction : input;\n");
-    CNLFP (_lfp, "rise_capacitance : %g;\n", time_up[i]*1e15);
-    CNLFP (_lfp, "fall_capacitance : %g;\n", time_dn[i]*1e15);
+    CNLFP (_lfp, "rise_capacitance : %g;\n", time_up[i]/config_get_real ("xcell.units.cap_conv"));
+    CNLFP (_lfp, "fall_capacitance : %g;\n", time_dn[i]/config_get_real ("xcell.units.cap_conv"));
     _l->_untab();
     CNLFP (_lfp, "}\n");
   }

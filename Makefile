@@ -22,7 +22,7 @@ EXE=xcell.$(EXT)
 
 TARGETS=$(EXE)
 
-OBJS=main.o liberty.o
+OBJS=main.o liberty.o cell.o
 
 SRCS=$(OBJS:.o=.cc)
 

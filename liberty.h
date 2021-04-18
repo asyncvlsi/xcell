@@ -78,11 +78,11 @@ class Cell {
   }
 
   void emit() {
-    printHeader ();
+    _printHeader ();
     _emit_leakage ();
     _emit_input_cap ();
     _emit_dynamic ();
-    printFooter ();
+    _printFooter ();
   }
 
  private:
@@ -94,8 +94,8 @@ class Cell {
   ActNetlistPass *np;
   node_t *is_stateholding;
 
-  void printHeader ();
-  void printFooter ();
+  void _printHeader ();
+  void _printFooter ();
 
   /**
      _sh_vars is the support for the state-holding variable

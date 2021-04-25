@@ -1349,26 +1349,19 @@ static int find_multi_driven_assignment (bitset_t *b, bitset_t *bopp,
 }
 
 
-  
-/*------------------------------------------------------------------------
- *
- * Dynamic scenarios
- *
- *------------------------------------------------------------------------
- */
-int Cell::_run_dynamic ()
+void Cell::_calc_dynamic ()
 {
-  FILE *sfp;
-  int num_inputs;
   int sh_outvar;
-  char buf[1024];
-  char file[1024];
 
+  if (A_LEN (dyn) > 0) {
+    /* already computed! */
+    return;
+  }
 
   A_INIT (dyn);
   
   if (!nl) {
-    return 0;
+    return;
   }
 
   /* Run dynamic scenarios.
@@ -1712,8 +1705,26 @@ int Cell::_run_dynamic ()
     printf ("\n");
   }
 #endif
+}
+  
+/*------------------------------------------------------------------------
+ *
+ * Dynamic scenarios
+ *
+ *------------------------------------------------------------------------
+ */
+int Cell::_run_dynamic ()
+{
+  FILE *sfp;
+  char buf[1024];
+  char file[1024];
 
+  if (!nl) {
+    return 0;
+  }
 
+  _calc_dynamic ();
+    
   /* -- create spice file -- */
 
   snprintf (file, 1024, "_spdy_");

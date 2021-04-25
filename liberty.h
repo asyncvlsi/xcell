@@ -136,6 +136,7 @@ class Cell {
   void _emit_input_cap ();
 
   int _run_dynamic ();
+  void _calc_dynamic ();
   void _emit_dynamic ();
 
   /* -- input cap measurement -- */

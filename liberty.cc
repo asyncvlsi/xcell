@@ -20,6 +20,7 @@
  **************************************************************************
  */
 #include <stdio.h>
+#include <string.h>
 #include <common/config.h>
 #include <common/misc.h>
 #include "liberty.h"

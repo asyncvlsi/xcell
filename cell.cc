@@ -2006,6 +2006,7 @@ void Cell::_emit_dynamic ()
 {
   int nslew = config_get_table_size ("xcell.input_trans");
   int nsweep = config_get_table_size ("xcell.load");
+  double window = config_get_real ("xcell.short_window");
   
   char buf[1024];
   
@@ -2156,11 +2157,8 @@ void Cell::_emit_dynamic ()
 	     config_get_table_size ("xcell.input_trans"),
 	     config_get_table_size ("xcell.load"));
       _l->_tab();
-      _l->_dump_index_table (1, "xcell.input_trans");
-      fprintf (_lfp, "\n");
-      _l->_dump_index_table (2, "xcell.load");
-      fprintf (_lfp, "\n");
-
+      _l->dump_index_tables ();
+      
       CNLFP (_lfp, "values(\\\n"); _l->_tab();
       for (int j=0; j < nslew; j++) {
 	CNLFP (_lfp, "\"");
@@ -2172,7 +2170,9 @@ void Cell::_emit_dynamic ()
 	  /*-- XXX: fixme: units, internal power definition --*/
 	  dp = dyn[i].intpow[j + k*nslew];
 	  dp = dp - leakage_power[idx_case];
-	  dp /= config_get_real ("xcell.units.power_conv");
+	  /* internal power is always in fJ */
+	  dp = dp*window*1e-12;	/* picoseconds * power */
+	  dp /= 1e-15;
 	  fprintf (_lfp, "%g", dp);
 	}
 	fprintf (_lfp, "\"");
@@ -2222,10 +2222,7 @@ void Cell::_emit_dynamic ()
 	     config_get_table_size ("xcell.input_trans"),
 	     config_get_table_size ("xcell.load"));
       _l->_tab();
-      _l->_dump_index_table (1, "xcell.input_trans");
-      fprintf (_lfp, "\n");
-      _l->_dump_index_table (2, "xcell.load");
-      fprintf (_lfp, "\n");
+      _l->dump_index_tables ();
 
       CNLFP (_lfp, "values(\\\n"); _l->_tab();
       for (int j=0; j < nslew; j++) {
@@ -2262,10 +2259,7 @@ void Cell::_emit_dynamic ()
 	     config_get_table_size ("xcell.input_trans"),
 	     config_get_table_size ("xcell.load"));
       _l->_tab();
-      _l->_dump_index_table (1, "xcell.input_trans");
-      fprintf (_lfp, "\n");
-      _l->_dump_index_table (2, "xcell.load");
-      fprintf (_lfp, "\n");
+      _l->dump_index_tables ();
 
       CNLFP (_lfp, "values(\\\n"); _l->_tab();
       for (int j=0; j < nslew; j++) {
@@ -2301,4 +2295,3 @@ void Cell::_emit_dynamic ()
     CNLFP (_lfp, "}\n");
   }
 }
-

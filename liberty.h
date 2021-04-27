@@ -30,6 +30,13 @@ class Liberty {
   Liberty (const char *file);
   ~Liberty();
 
+  void dump_index_tables() {
+    _dump_index_table (1, _trans_cnt, _trans);
+    fprintf (_lfp, "\n");
+    _dump_index_table (2, _load_cnt, _load);
+    fprintf (_lfp, "\n");
+  }
+
  private:
   FILE *_lfp;			/* file */
 
@@ -38,14 +45,18 @@ class Liberty {
   void _line();
   int _tabs;
 
-
+  /*-- delay and power tables --*/
+  int _trans_cnt;
+  double *_trans;
+  int _load_cnt;
+  double *_load;
+  
 
   void _lib_emit_header (const char *file);
 
-  void _lib_emit_template (const char *name, const char *prefix,
-			   const char *v_trans, const char *v_load);
+  void _lib_emit_template (const char *name, const char *prefix);
 
-  void _dump_index_table (int idx, const char *name);
+  void _dump_index_table (int idx, int sz, double *table);
   
 
   friend class Cell;
@@ -70,10 +81,15 @@ class Cell {
  public:
   Cell (Liberty *l, Process *p);
   ~Cell();
-  
-  void characterize() {
+
+  void prepare() {
     _run_leakage ();
     _run_input_cap ();
+    _calc_dynamic ();
+  }
+  
+  void characterize() {
+    prepare ();
     _run_dynamic ();
   }
 

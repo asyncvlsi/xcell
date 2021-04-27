@@ -26,7 +26,6 @@
 #include "liberty.h"
 
 
-
 Liberty::Liberty (const char *file)
 {
   char *buf;
@@ -42,6 +41,137 @@ Liberty::Liberty (const char *file)
   }
   
   FREE (buf);
+
+  /* -- sanity check units -- */
+  double tst;
+  const char *str;
+
+  tst = config_get_real ("xcell.units.time_conv");
+  if (tst == 1e-9) {
+    str = "n";
+  }
+  else if (tst == 1e-10) {
+    str = "00p";
+  }
+  else if (tst == 1e-11) {
+    str = "0p";
+  }
+  else if (tst == 1e-12) {
+    str = "p";
+  }
+  else {
+    warning ("Liberty file time units must be 1ps, 10ps, 100ps, or 1ns. Using 1ns.");
+    config_set_real ("xcell.units.time_conv", 1e-9);
+    str = "n";
+  }
+  config_set_string ("xcell.units.time", str);
+
+  tst = config_get_real ("xcell.units.cap_conv");
+  if (tst == 1e-15) {
+    str = "f";
+  }
+  else if (tst == 1e-12) {
+    str = "p";
+  }
+  else {
+    warning ("Capacitance units must be either pF or fF; using fF");
+    config_set_real ("xcell.units.cap_conv", 1e-15);
+    str = "f";
+  }
+  config_set_string ("xcell.units.cap", str);
+
+  tst = config_get_real ("xcell.units.current_conv");
+  if (tst == 1e-6) {
+    str = "u";
+  }
+  else if (tst == 1e-5) {
+    str = "0u";
+  }
+  else if (tst == 1e-4) {
+    str = "00u";
+  }
+  else if (tst == 1e-3) {
+    str = "m";
+  }
+  else if (tst == 1e-2) {
+    str = "0m";
+  }
+  else if (tst == 1e-1) {
+    str = "00m";
+  }
+  else if (tst == 1) {
+    str = "";
+  }
+  else {
+    warning ("Current units must be 1uA to 1A (steps of 10); using 1mA");
+    config_set_real ("xcell.units.current_conv", 1e-3);
+    str = "m";
+  }
+  config_set_string ("xcell.units.current", str);
+
+  tst = config_get_real ("xcell.units.power_conv");
+  if (tst == 1e-12) {
+    str = "p";
+  }
+  else if (tst == 1e-11) {
+    str = "0p";
+  }
+  else if (tst == 1e-10) {
+    str = "00p";
+  }
+  else if (tst == 1e-9) {
+    str = "n";
+  }
+  else if (tst == 1e-8) {
+    str = "0n";
+  }
+  else if (tst == 1e-7) {
+    str = "00n";
+  }
+  else if (tst == 1e-6) {
+    str = "u";
+  }
+  else if (tst == 1e-5) {
+    str = "0u";
+  }
+  else if (tst == 1e-4) {
+    str = "00u";
+  }
+  else if (tst == 1e-3) {
+    str = "m";
+  }
+  else {
+    warning ("Power units must be 1pW to 1mW (steps of 10); using 1uW");
+    config_set_real ("xcell.units.power_conv", 1e-6);
+    str = "u";
+  }  
+  config_set_string ("xcell.units.power", str);
+
+  tst = config_get_real ("xcell.units.resis_conv");
+  if (tst == 1e3) {
+    str = "k";
+  }
+  else if (tst == 1e2) {
+    str = "00";
+  }
+  else if (tst == 1e1) {
+    str = "0";
+  }
+  else if (tst == 1) {
+    str = "";
+  }
+  else {
+    warning ("Resistance units must be 1kohm, 100ohm, 10ohm, 1ohm; using 1kohm.");
+    config_set_real ("xcell.units.resis_conv", 1e3);
+    str = "k";
+  }
+  config_set_string ("xcell.units.resis", str);
+
+  _trans_cnt = config_get_table_size ("xcell.input_trans");
+  _trans = config_get_table_real ("xcell.input_trans");
+
+  _load_cnt = config_get_table_size ("xcell.load");
+  _load = config_get_table_real ("xcell.load");
 
   /* -- emit header -- */
   _lib_emit_header (file);
@@ -105,10 +235,10 @@ void Liberty::_lib_emit_header (const char *file)
   NLFP (_lfp, "time_unit : 1%ss;\n", config_get_string ("xcell.units.time"));
   NLFP (_lfp, "voltage_unit : 1V;\n");
   NLFP (_lfp, "current_unit : 1%sA;\n", config_get_string ("xcell.units.current"));
-  NLFP (_lfp, "pulling_resistance_unit : \"1kohm\";\n");
-  NLFP (_lfp, "capacitive_load_unit (1, %sF);\n", config_get_string ("xcell.units.cap"));
+  NLFP (_lfp, "pulling_resistance_unit : \"1%sohm\";\n", config_get_string ("xcell.units.resis"));
+  NLFP (_lfp, "capacitive_load_unit (1, %sf);\n", config_get_string ("xcell.units.cap"));
   NLFP (_lfp, "leakage_power_unit : \"1%sW\";\n", config_get_string ("xcell.units.power"));
-  NLFP (_lfp, "internal_power_unit : \"1fJ\";\n");
+  //NLFP (_lfp, "internal_power_unit : \"1fJ\";\n");
 
   NLFP (_lfp, "default_connection_class : \"default\";\n");
   NLFP (_lfp, "default_fanout_load : 1;\n");
@@ -141,13 +271,12 @@ void Liberty::_lib_emit_header (const char *file)
   NLFP (_lfp, "voltage_map(GND, 0.0);\n");
 
   /* -- operating conditions -- */
-  char **table = config_get_table_string ("xcell.corners");
-  NLFP (_lfp, "operating_conditions(\"%s\") {\n", table[0]);
+  NLFP (_lfp, "operating_conditions(\"%s\") {\n", config_get_string ("xcell.corner"));
   _tab();
   NLFP (_lfp, "process : %g;\n", config_get_real ("xcell.P_value"));
   NLFP (_lfp, "temperature : %g;\n", config_get_real ("xcell.T"));
   NLFP (_lfp, "voltage : %g;\n", config_get_real ("xcell.Vdd"));
-  NLFP (_lfp, "process_corner: \"%s\";\n", table[0]);
+  NLFP (_lfp, "process_label: \"%s\";\n", config_get_string ("xcell.corner"));
   NLFP (_lfp, "tree_type : balanced_tree;\n");
   _untab();
   NLFP (_lfp, "}\n");
@@ -164,21 +293,15 @@ void Liberty::_lib_emit_header (const char *file)
   NLFP (_lfp, "default_wire_load : \"wlm1\";\n");
 
   /* -- templates -- */
-  _lib_emit_template ("lu_table", "delay",
-		     "xcell.input_trans", "xcell.load");
-
-  _lib_emit_template ("power_lut", "power",
-		     "xcell.input_trans", "xcell.load");
-
+  _lib_emit_template ("lu_table", "delay");
+  _lib_emit_template ("power_lut", "power");
 }
 
 
-void Liberty::_lib_emit_template (const char *name, const char *prefix,
-				  const char *v_trans, const char *v_load)
+void Liberty::_lib_emit_template (const char *name, const char *prefix)
 {
-  NLFP (_lfp, "%s_template (%s_%dx%d) {\n", name,  prefix, 
-	config_get_table_size (v_trans),
-	config_get_table_size (v_load));
+  NLFP (_lfp, "%s_template (%s_%dx%d) {\n", name,  prefix,
+	_trans_cnt, _load_cnt);
   _tab();
 
   if (strcmp (prefix, "power") == 0) {
@@ -188,9 +311,9 @@ void Liberty::_lib_emit_template (const char *name, const char *prefix,
     NLFP (_lfp, "variable_1 : input_net_transition;\n");
   }
   NLFP (_lfp, "variable_2 : total_output_net_capacitance;\n");
-  _dump_index_table (1, v_trans);
+  _dump_index_table (1, _trans_cnt, _trans);
   fprintf (_lfp, "\n");
-  _dump_index_table (2, v_load);
+  _dump_index_table (2, _load_cnt, _load);
   fprintf (_lfp, "\n");
 
   _untab();
@@ -198,15 +321,11 @@ void Liberty::_lib_emit_template (const char *name, const char *prefix,
 }
 
 
-void Liberty::_dump_index_table (int idx, const char *name)
+void Liberty::_dump_index_table (int idx, int sz, double *tab)
 {
-  double *tab;
-
   NLFP (_lfp, "index_%d(\"", idx);
 
-  tab = config_get_table_real (name);
-  
-  for (int i=0; i < config_get_table_size (name); i++) {
+  for (int i=0; i < sz; i++) {
     if (i != 0) {
       fprintf (_lfp, ", ");
     }

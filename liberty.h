@@ -64,17 +64,16 @@ class Liberty {
 
 
 struct dynamic_case {
-  int nidx;
+  int nidx;			// number of indices in idx used
   int idx[4];
-  int out_id;
-  int in_id;
-  int in_init;
-  int out_init;
+  int out_id;			// output id
+  int in_id;			// input id (related pin, switching)
+  int in_init;			// 0/1 for rise/fall
+  int out_init;			// 0/1 for rise/fall
 
-  double *delay;
-  double *transit;
-  double *intpow;
-  
+  double *delay;		// delay table
+  double *transit;		// transit time (slew) table
+  double *intpow;		// internal power table
 };
 
 class Cell {
@@ -108,11 +107,17 @@ class Cell {
   FILE *_lfp;
   netlist_t *nl;
   ActNetlistPass *np;
-  node_t *is_stateholding;
 
   void _printHeader ();
   void _printFooter ();
 
+  int _is_dataflow;		// is this a dataflow node? in this
+				// case, we have a fake lib file
+
+  /** is this a state-holding gate? if so this is the state-holding
+      node **/
+  node_t *is_stateholding;
+  
   /**
      _sh_vars is the support for the state-holding variable
   **/
@@ -141,17 +146,24 @@ class Cell {
   int _gen_spice_header (FILE *fp);
   int _get_input_pin (int pin);
   int _get_output_pin (int pin);
+
+  void _sprint_input_pin (char *buf, int sz, int pin);
+  void _sprint_output_pin (char *buf, int sz, int pin);
+  
   void _print_all_input_cases (FILE *fp, const char *prefix);
   void _print_input_cap_cases (FILE *sfp, const char *prefix);
   void _print_input_case (int idx, int skipmask = 0);
 
   int _run_leakage ();
+  int _run_dflow_leakage ();
   void _emit_leakage ();
 
   int _run_input_cap ();
+  int _run_dflow_input_cap ();
   void _emit_input_cap ();
 
   int _run_dynamic ();
+  int _run_dflow_dynamic ();
   void _calc_dynamic ();
   void _emit_dynamic ();
 

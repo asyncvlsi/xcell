@@ -178,6 +178,7 @@ Cell::Cell (Liberty *l, Process *p)
   _lfp = l->_lfp;
   A_INIT (_sh_vars);
   _num_inputs = 0;
+  _num_outputs = 0;
   is_stateholding = NULL;
   _outvals = NULL;
   _tt[0] = NULL;
@@ -213,20 +214,48 @@ Cell::Cell (Liberty *l, Process *p)
     if (nl->bN->ports[i].input) {
       _num_inputs++;
     }
+    else {
+      _num_outputs++;
+    }
   }
+
+  if (_num_inputs == 0 && _num_outputs == 0) {
+    _is_dataflow = 1;
+    /* -- check to see if this is a dataflow cell -- */
+    for (int i=0; i < A_LEN (nl->bN->chpports); i++) {
+      if (nl->bN->chpports[i].omit) continue;
+      /* -- check if this is an int! */
+      /* each channel is an input/output pair */
+      _num_inputs++;
+      _num_outputs++;
+    }
+  }
+  else {
+    _is_dataflow = 0;
+  }
+  
   if (_num_inputs == 0) {
     warning ("Cell %s: no inputs?", nl->bN->p->getName());
     nl = NULL;
     return;
   }
-
   if (_num_inputs > 8) {
     warning ("High fan-in cell?");
     nl = NULL;
     return;
   }
+  if (_num_outputs == 0) {
+    warning ("Cell %s: no outputs?", nl->bN->p->getName());
+    nl = NULL;
+    return;
+  }
 
-  /* prepare for characterization, in particular collect detailed
+  if (_is_dataflow) {
+    /* we're done! */
+    return;
+  }
+
+  /* prepare for circuit characterization, in particular collect detailed
      information for state-holding cells.
   */
   for (node_t *n = nl->hd; n; n = n->next) {
@@ -269,8 +298,6 @@ Cell::Cell (Liberty *l, Process *p)
 
 void Cell::_printHeader ()
 {
-  if (!nl) return;
-  
   CNLFP (_lfp, "cell(");
   a->mfprintfproc (_lfp, _p);
   fprintf (_lfp, ") {\n");
@@ -298,10 +325,6 @@ void Cell::_printHeader ()
 
 void Cell::_printFooter ()
 {
-  if (!nl) {
-    return;
-  }
-    
   _l->_untab();
   CNLFP (_lfp, "}\n");
 }
@@ -425,16 +448,20 @@ void Cell::_build_truth_table (act_prs_expr_t *e, int idx)
 
 Cell::~Cell()
 {
-  for (int i=0; i < _num_outputs; i++) {
-    bitset_free (_outvals[i]);
+  if (_outvals) {
+    for (int i=0; i < _num_outputs; i++) {
+      bitset_free (_outvals[i]);
+    }
+
+    int x = _num_outputs;
+  
+    for (int i=0; i < A_LEN (_sh_vars); i++) {
+      if (_sh_vars[i]->isport) continue;
+      bitset_free (_outvals[x]);
+      x++;
+    }
+    FREE (_outvals);
   }
-  int x = _num_outputs;
-  for (int i=0; i < A_LEN (_sh_vars); i++) {
-    if (_sh_vars[i]->isport) continue;
-    bitset_free (_outvals[x]);
-    x++;
-  }
-  FREE (_outvals);
   
   if (is_stateholding) {
     bitset_free (_tt[0]);
@@ -477,6 +504,10 @@ int Cell::_run_leakage ()
   A_DECL (char *, outname);
 
   if (!nl) return 0;
+
+  if (_is_dataflow) {
+    return _run_dflow_leakage ();
+  }
 
   A_INIT (outname);
 
@@ -560,7 +591,7 @@ int Cell::_run_leakage ()
     A_INC (outname);
   }
   num_outputs = A_LEN (outname);
-  _num_outputs = num_outputs;
+  Assert (_num_outputs == num_outputs, "What?");
 
   /*-- we also need internal nodes for stateholding gates --*/
   for (int i=0; i < A_LEN (_sh_vars); i++) {
@@ -835,14 +866,25 @@ int Cell::_get_input_pin (int pin)
 {
   int pos = pin;
   int j;
-  
-  for (j=0; j < A_LEN (nl->bN->ports); j++) {
-    if (nl->bN->ports[j].omit) continue;
-    if (!nl->bN->ports[j].input) continue;
-    if (pos == 0) {
-      return j;
+
+  if (_is_dataflow) {
+    for (j=0; j < A_LEN (nl->bN->chpports); j++) {
+      if (nl->bN->chpports[j].omit) continue;
+      if (pos == 0) {
+	return j;
+      }
+      pos--;
     }
-    pos--;
+  }
+  else {
+    for (j=0; j < A_LEN (nl->bN->ports); j++) {
+      if (nl->bN->ports[j].omit) continue;
+      if (!nl->bN->ports[j].input) continue;
+      if (pos == 0) {
+	return j;
+      }
+      pos--;
+    }
   }
   Assert (0, "Could not find input pin!");
   return -1;
@@ -852,13 +894,25 @@ int Cell::_get_output_pin (int pin)
 {
   int pos = pin;
   int j;
-  for (j=0; j < A_LEN (nl->bN->ports); j++) {
-    if (nl->bN->ports[j].omit) continue;
-    if (nl->bN->ports[j].input) continue;
-    if (pos == 0) {
-      return j;
+
+  if (_is_dataflow) {
+    for (j=0; j < A_LEN (nl->bN->chpports); j++) {
+      if (nl->bN->chpports[j].omit) continue;
+      if (pos == 0) {
+	return j;
+      }
+      pos--;
     }
-    pos--;
+  }
+  else {
+    for (j=0; j < A_LEN (nl->bN->ports); j++) {
+      if (nl->bN->ports[j].omit) continue;
+      if (nl->bN->ports[j].input) continue;
+      if (pos == 0) {
+	return j;
+      }
+      pos--;
+    }
   }
   Assert (0, "Could not find output pin!");
   return -1;
@@ -895,64 +949,68 @@ void Cell::_emit_leakage ()
   int i;
   char buf[1024];
 
+  if (!nl) return;
+
   for (int i=0; i < (1 << _num_inputs); i++) {
     double lk = leakage_power[i];
 
-    /*-- now check for interference --*/
+    if (!_is_dataflow) {
+      /*-- now check for interference --*/
 
-    /*--
-      Primary inputs are set by "i"
-      Secondary inputs are set by bitset outval[...]
-      --*/
+      /*--
+	Primary inputs are set by "i"
+	Secondary inputs are set by bitset outval[...]
+	--*/
 
-    unsigned int val = 0;
-    int loc = _num_outputs;
-
-    /* -- compute variable assignment -- */
-    for (int k=0; k < A_LEN (_sh_vars); k++) {
-      /* search in port list */
-      if (_sh_vars[k]->isport) {
-	int j;
-	int pos = 0;
-	int opos = 0;
-	for (j=0; j < A_LEN (nl->bN->ports); j++) {
-	  if (nl->bN->ports[j].omit) continue;
-	  if (nl->bN->ports[j].c == _sh_vars[k]->id) {
-	    break;
+      unsigned int val = 0;
+      int loc = _num_outputs;
+      
+      /* -- compute variable assignment -- */
+      for (int k=0; k < A_LEN (_sh_vars); k++) {
+	/* search in port list */
+	if (_sh_vars[k]->isport) {
+	  int j;
+	  int pos = 0;
+	  int opos = 0;
+	  for (j=0; j < A_LEN (nl->bN->ports); j++) {
+	    if (nl->bN->ports[j].omit) continue;
+	    if (nl->bN->ports[j].c == _sh_vars[k]->id) {
+	      break;
+	    }
+	    if (nl->bN->ports[j].input) {
+	      pos++;
+	    }
+	    else {
+	      opos++;
+	    }
 	  }
+	  Assert (j != A_LEN (nl->bN->ports), "What?!");
+
 	  if (nl->bN->ports[j].input) {
-	    pos++;
+	    if ((i >> pos) & 1) {
+	      val = val | (1 << k);
+	    }
 	  }
 	  else {
-	    opos++;
-	  }
-	}
-	Assert (j != A_LEN (nl->bN->ports), "What?!");
-
-	if (nl->bN->ports[j].input) {
-	  if ((i >> pos) & 1) {
-	    val = val | (1 << k);
+	    /* it's an output! */
+	    if (bitset_tst (_outvals[opos], i)) {
+	      val = val | (1 << k);
+	    }
 	  }
 	}
 	else {
-	  /* it's an output! */
-	  if (bitset_tst (_outvals[opos], i)) {
+	  if (bitset_tst (_outvals[loc], i)) {
 	    val = val | (1 << k);
 	  }
+	  loc++;
 	}
       }
-      else {
-	if (bitset_tst (_outvals[loc], i)) {
-	  val = val | (1 << k);
-	}
-	loc++;
-      }
-    }
 
-    if (is_stateholding) {
-      if (bitset_tst (_tt[0], val) && bitset_tst (_tt[1], val)) {
-	/* -- interference -- */
-	continue;
+      if (is_stateholding) {
+	if (bitset_tst (_tt[0], val) && bitset_tst (_tt[1], val)) {
+	  /* -- interference -- */
+	  continue;
+	}
       }
     }
       
@@ -960,17 +1018,10 @@ void Cell::_emit_leakage ()
     _l->_tab();
     CNLFP (_lfp, "when : \"");
     for (int k=0; k < _num_inputs; k++) {
-      int pos = _get_input_pin (k);
-
-      ActId *tmp;
-      tmp = nl->bN->ports[pos].c->toid();
-      tmp->sPrint (buf, 1024);
-      delete tmp;
-
+      _sprint_input_pin (buf, 1024, k);
       if (k > 0) {
 	fprintf (_lfp, "&");
       }
-
       if (((i >> k) & 1) == 0) {
 	fprintf (_lfp, "!");
       }
@@ -993,6 +1044,10 @@ int Cell::_run_input_cap ()
 
   if (!nl) {
     return 0;
+  }
+
+  if (_is_dataflow) {
+    return _run_dflow_input_cap ();
   }
 
   snprintf (file, 1024, "_spcp_");
@@ -1151,13 +1206,10 @@ void Cell::_emit_input_cap ()
 {
   char buf[1024];
   
+  if (!nl) return;
+  
   for (int i=0; i < _num_inputs; i++) {
-    int pos = _get_input_pin (i);
-
-    ActId *tmp;
-    tmp = nl->bN->ports[pos].c->toid();
-    tmp->sPrint (buf, 1024);
-    delete tmp;
+    _sprint_input_pin (buf, 1024, i);
     CNLFP (_lfp, "pin(");
     a->mfprintf (_lfp, "%s", buf);  fprintf (_lfp, ") {\n");
     _l->_tab();
@@ -1242,8 +1294,6 @@ void Cell::_print_input_case (int idx, int skipmask)
   for (int j=0; j < _num_inputs; j++) {
     if (skipmask & (1 << j)) continue;
     
-    int ipin = _get_input_pin (j);
-    
     if (!first) {
       fprintf (_lfp, "*");
     }
@@ -1252,9 +1302,7 @@ void Cell::_print_input_case (int idx, int skipmask)
     if (!((idx >> j) & 1)) {
       fprintf (_lfp, "!");
     }
-    tmp = nl->bN->ports[ipin].c->toid();
-    tmp->sPrint (buf, 1024);
-    delete tmp;
+    _sprint_input_pin (buf, 1024, j);
     a->mfprintf (_lfp, "%s", buf);
   }
 }
@@ -1352,6 +1400,14 @@ static int find_multi_driven_assignment (bitset_t *b, bitset_t *bopp,
 void Cell::_calc_dynamic ()
 {
   int sh_outvar;
+
+  if (_is_dataflow) {
+    
+
+
+    
+    return;
+  }
 
   if (A_LEN (dyn) > 0) {
     /* already computed! */
@@ -1722,7 +1778,10 @@ int Cell::_run_dynamic ()
   if (!nl) {
     return 0;
   }
-
+  if (_is_dataflow) {
+    return _run_dflow_dynamic ();
+  }
+  
   _calc_dynamic ();
     
   /* -- create spice file -- */
@@ -2010,100 +2069,101 @@ void Cell::_emit_dynamic ()
   
   char buf[1024];
   
+  if (!nl) return;
+  
   for (int nout=0; nout < _num_outputs; nout++) {
-    int pos = _get_output_pin (nout);
-    ActId *tmp;
     char buf[1024];
     CNLFP (_lfp, "pin(");
-    tmp = nl->bN->ports[pos].c->toid();
-    tmp->sPrint (buf, 1024);
-    delete tmp;
+    _sprint_output_pin (buf, 1024, nout);
     a->mfprintf (_lfp, "%s", buf);
     fprintf (_lfp, ") {\n");
     _l->_tab ();
     
     CNLFP (_lfp, "direction : output;\n");
-    CNLFP (_lfp, "function : ");
-    fprintf (_lfp, "\"");
-    if (!is_stateholding) {
-      int first = 1;
-      /*-- print function --*/
-      for (int i=0; i < (1 << _num_inputs); i++) {
-	if (bitset_tst (_outvals[nout], i)) {
+
+    if (!_is_dataflow) {
+      CNLFP (_lfp, "function : ");
+      fprintf (_lfp, "\"");
+      if (!is_stateholding) {
+	int first = 1;
+	/*-- print function --*/
+	for (int i=0; i < (1 << _num_inputs); i++) {
+	  if (bitset_tst (_outvals[nout], i)) {
+	    if (!first) {
+	      fprintf (_lfp, "+");
+	    }
+	    first = 0;
+	    _print_input_case (i);
+	  }
+	}
+      }
+      else {
+	int first = 1;
+
+	if (is_out[nout] == 0) {
+	  /*-- this output is the state-holding gate --*/
+	  for (int i=0; i < (1 << _num_inputs); i++) {
+	    if (bitset_tst (st[1], i)) {
+	      if (!first) {
+		fprintf (_lfp, "+");
+	      }
+	      first = 0;
+	      _print_input_case (i);
+	    }
+	  }
+	  if (!first) {
+	    fprintf (_lfp, "+");
+	    first = 0;
+	  }
+	  a->mfprintf (_lfp, "%s", buf);
+	  fprintf (_lfp, "*!(");
+	  first = 1;
+	  for (int i=0; i < (1 << _num_inputs); i++) {
+	    if (bitset_tst (st[0], i)) {
+	      if (!first) {
+		fprintf (_lfp, "+");
+	      }
+	      first = 0;
+	      _print_input_case (i);
+	    }
+	  }
+	  fprintf (_lfp, ")");
+	}
+	else if (is_out[nout] == 1) {
+	  /*-- this output is the state-holding gate --*/
+	  for (int i=0; i < (1 << _num_inputs); i++) {
+	    if (bitset_tst (st[0], i)) {
+	      if (!first) {
+		fprintf (_lfp, "+");
+	      }
+	      first = 0;
+	      _print_input_case (i);
+	    }
+	  }
 	  if (!first) {
 	    fprintf (_lfp, "+");
 	  }
 	  first = 0;
-	  _print_input_case (i);
+	  a->mfprintf (_lfp, "%s", buf);
+	  fprintf (_lfp, "*!(");
+	  first = 1;
+	  for (int i=0; i < (1 << _num_inputs); i++) {
+	    if (bitset_tst (st[1], i)) {
+	      if (!first) {
+		fprintf (_lfp, "+");
+	      }
+	      first = 0;
+	      _print_input_case (i);
+	    }
+	  }
+	  fprintf (_lfp, ")");
+	}
+	else {
+	  fprintf (_lfp, " ");
 	}
       }
+      fprintf (_lfp, "\";\n");
     }
-    else {
-      int first = 1;
-
-      if (is_out[nout] == 0) {
-	/*-- this output is the state-holding gate --*/
-	for (int i=0; i < (1 << _num_inputs); i++) {
-	  if (bitset_tst (st[1], i)) {
-	    if (!first) {
-	      fprintf (_lfp, "+");
-	    }
-	    first = 0;
-	    _print_input_case (i);
-	  }
-	}
-	if (!first) {
-	  fprintf (_lfp, "+");
-	  first = 0;
-	}
-	a->mfprintf (_lfp, "%s", buf);
-	fprintf (_lfp, "*!(");
-	first = 1;
-	for (int i=0; i < (1 << _num_inputs); i++) {
-	  if (bitset_tst (st[0], i)) {
-	    if (!first) {
-	      fprintf (_lfp, "+");
-	    }
-	    first = 0;
-	    _print_input_case (i);
-	  }
-	}
-	fprintf (_lfp, ")");
-      }
-      else if (is_out[nout] == 1) {
-	/*-- this output is the state-holding gate --*/
-	for (int i=0; i < (1 << _num_inputs); i++) {
-	  if (bitset_tst (st[0], i)) {
-	    if (!first) {
-	      fprintf (_lfp, "+");
-	    }
-	    first = 0;
-	    _print_input_case (i);
-	  }
-	}
-	if (!first) {
-	  fprintf (_lfp, "+");
-	}
-	first = 0;
-	a->mfprintf (_lfp, "%s", buf);
-	fprintf (_lfp, "*!(");
-	first = 1;
-	for (int i=0; i < (1 << _num_inputs); i++) {
-	  if (bitset_tst (st[1], i)) {
-	    if (!first) {
-	      fprintf (_lfp, "+");
-	    }
-	    first = 0;
-	    _print_input_case (i);
-	  }
-	}
-	fprintf (_lfp, ")");
-      }
-      else {
-	fprintf (_lfp, " ");
-      }
-    }
-    fprintf (_lfp, "\";\n");
 
     /* -- measurement results -- 
 
@@ -2128,7 +2188,6 @@ void Cell::_emit_dynamic ()
        }
      */
     for (int i=0; i < A_LEN (dyn); i++) {
-      ActId *tmp;
       int idx_case;
       
       if (dyn[i].out_id != nout) continue;
@@ -2139,9 +2198,7 @@ void Cell::_emit_dynamic ()
       _l->_tab();
 
       CNLFP (_lfp, "related_pin: \"");
-      tmp = nl->bN->ports[_get_input_pin (dyn[i].in_id)].c->toid();
-      tmp->sPrint (buf, 1024);
-      delete tmp;
+      _sprint_input_pin (buf, 1024, dyn[i].in_id);
       a->mfprintf (_lfp, "%s", buf);
       fprintf (_lfp, "\";\n");
 
@@ -2195,9 +2252,7 @@ void Cell::_emit_dynamic ()
       _l->_tab();
 
       CNLFP (_lfp, "related_pin: \"");
-      tmp = nl->bN->ports[_get_input_pin (dyn[i].in_id)].c->toid();
-      tmp->sPrint (buf, 1024);
-      delete tmp;
+      _sprint_input_pin (buf, 1024, dyn[i].in_id);
       a->mfprintf (_lfp, "%s", buf);
       fprintf (_lfp, "\";\n");
 
@@ -2295,3 +2350,83 @@ void Cell::_emit_dynamic ()
     CNLFP (_lfp, "}\n");
   }
 }
+
+
+
+void Cell::_sprint_input_pin (char *buf, int sz, int pos)
+{
+  int i = _get_input_pin (pos);
+  ActId *tmp = nl->bN->ports[pos].c->toid();
+  tmp->sPrint (buf, sz);
+  delete tmp;
+
+  if (_is_dataflow) {
+    snprintf (buf + strlen (buf), sz - strlen (buf), ":i");
+  }
+}
+
+void Cell::_sprint_output_pin (char *buf, int sz, int pos)
+{
+  int i = _get_output_pin (pos);
+  ActId *tmp = nl->bN->ports[pos].c->toid();
+  tmp->sPrint (buf, sz);
+  delete tmp;
+
+  if (_is_dataflow) {
+    snprintf (buf + strlen (buf), sz - strlen (buf), ":o");
+  }
+}
+
+int Cell::_run_dflow_leakage (void)
+{
+  MALLOC (leakage_power, double, (1 << _num_inputs));
+  for (int i=0; i < (1 << _num_inputs); i++) {
+    leakage_power[i] = 0;
+  }
+  return 1;
+}
+
+int Cell::_run_dflow_dynamic (void)
+{
+  int nslew = config_get_table_size ("xcell.input_trans");
+  int nsweep = config_get_table_size ("xcell.load");
+  
+  for (int i=0; i < _num_inputs; i++) {
+    for (int j=0; j < _num_outputs; j++) {
+
+      A_NEW (dyn, struct dynamic_case);
+      A_NEXT (dyn).nidx = 0;
+      A_NEXT (dyn).out_id = j;
+      A_NEXT (dyn).in_id = i;
+      A_NEXT (dyn).in_init = 1;
+      A_NEXT (dyn).out_init = 1;
+
+      MALLOC (A_NEXT (dyn).delay, double, nslew*nsweep);
+      MALLOC (A_NEXT (dyn).transit, double, nslew*nsweep);
+      MALLOC (A_NEXT (dyn).intpow, double, nslew*nsweep);
+
+      for (int k=0; k < nslew*nsweep; k++) {
+	A_NEXT (dyn).delay[k] = 100e-12;
+	A_NEXT (dyn).transit[k] = 10e-12;
+	A_NEXT (dyn).intpow[k] = 0.0;
+      }
+      A_INC (dyn);
+    }
+  }
+  
+  return 1;
+}
+
+int Cell::_run_dflow_input_cap (void)
+{
+  if (_num_inputs > 0) {
+    MALLOC (time_up, double, _num_inputs);
+    MALLOC (time_dn, double, _num_inputs);
+    for (int i=0; i < _num_inputs; i++) {
+      time_up[i] = 0;
+      time_dn[i] = 0;
+    }
+  }
+  return 1;
+}
+  

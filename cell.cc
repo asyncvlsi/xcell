@@ -2390,6 +2390,8 @@ int Cell::_run_dflow_dynamic (void)
 {
   int nslew = config_get_table_size ("xcell.input_trans");
   int nsweep = config_get_table_size ("xcell.load");
+  char cbuf[1024];
+  char pbuf[200];
   
   for (int i=0; i < _num_inputs; i++) {
     for (int j=0; j < _num_outputs; j++) {
@@ -2405,8 +2407,19 @@ int Cell::_run_dflow_dynamic (void)
       MALLOC (A_NEXT (dyn).transit, double, nslew*nsweep);
       MALLOC (A_NEXT (dyn).intpow, double, nslew*nsweep);
 
+      _sprint_output_pin (pbuf, 200, j);
+
+      double d;
+      snprintf (cbuf, 1024, "xcell.dflow.%s.%s.delay", _p->getName(), pbuf);
+      if (config_exists (cbuf)) {
+	d = config_get_real (cbuf)*1e-12;
+      }
+      else {
+	d = 0;
+      }
+
       for (int k=0; k < nslew*nsweep; k++) {
-	A_NEXT (dyn).delay[k] = 100e-12;
+	A_NEXT (dyn).delay[k] = d;
 	A_NEXT (dyn).transit[k] = 10e-12;
 	A_NEXT (dyn).intpow[k] = 0.0;
       }
@@ -2429,4 +2442,3 @@ int Cell::_run_dflow_input_cap (void)
   }
   return 1;
 }
-  

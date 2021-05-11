@@ -2412,7 +2412,7 @@ int Cell::_run_dflow_dynamic (void)
       double d;
       snprintf (cbuf, 1024, "xcell.dflow.%s.%s.delay", _p->getName(), pbuf);
       if (config_exists (cbuf)) {
-	d = config_get_real (cbuf)*1e-12;
+	d = config_get_real (cbuf);
       }
       else {
 	d = 0;

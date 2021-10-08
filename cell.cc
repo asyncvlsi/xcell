@@ -2356,7 +2356,7 @@ void Cell::_emit_dynamic ()
 void Cell::_sprint_input_pin (char *buf, int sz, int pos)
 {
   int i = _get_input_pin (pos);
-  ActId *tmp = nl->bN->ports[pos].c->toid();
+  ActId *tmp = nl->bN->ports[i].c->toid();
   tmp->sPrint (buf, sz);
   delete tmp;
 
@@ -2368,7 +2368,7 @@ void Cell::_sprint_input_pin (char *buf, int sz, int pos)
 void Cell::_sprint_output_pin (char *buf, int sz, int pos)
 {
   int i = _get_output_pin (pos);
-  ActId *tmp = nl->bN->ports[pos].c->toid();
+  ActId *tmp = nl->bN->ports[i].c->toid();
   tmp->sPrint (buf, sz);
   delete tmp;
 

@@ -722,19 +722,19 @@ int Cell::_run_leakage ()
     atrace_advance_time (tr, (period-1000)*1e-12/ATRACE_GET_STEPSIZE (tr));
 
     for (int j=0; j < A_LEN (outnode); j++) {
-      val = ATRACE_NODE_VAL (tr, outnode[j]);
+      val = ATRACE_NODE_FLOATVAL (outnode[j]);
 
       if (val >= vhigh) {
 	bitset_set (_outvals[j], i);
-	//printf ("out[%d]: H @ %g\n", j, ATRACE_NODE_VAL (tr, timenode));
+	//printf ("out[%d]: H @ %g\n", j, ATRACE_NODE_FLOATVAL (timenode));
       }
       else if (val <= vlow) {
 	bitset_clr (_outvals[j], i);
-	//printf ("out[%d]: L @ %g\n", j, ATRACE_NODE_VAL (tr, timenode));
+	//printf ("out[%d]: L @ %g\n", j, ATRACE_NODE_FLOATVAL (timenode));
       }
       else {
 	if (j >= num_outputs) {
-	  warning ("%s: out[%d]: X (%g) @ %g\n", _p->getName(), j, val, ATRACE_NODE_VAL (tr, timenode));
+	  warning ("%s: out[%d]: X (%g) @ %g\n", _p->getName(), j, val, ATRACE_NODE_FLOATVAL (timenode));
 	}
       }
     }

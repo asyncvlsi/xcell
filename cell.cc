@@ -179,16 +179,13 @@ Cell::Cell (Liberty *l, Process *p)
   A_INIT (_sh_vars);
   _num_inputs = 0;
   _num_outputs = 0;
-  is_stateholding = NULL;
   _outvals = NULL;
-  _tt[0] = NULL;
-  _tt[1] = NULL;
   leakage_power = NULL;
   time_up = NULL;
   time_dn = NULL;
-  is_out = NULL;
-  st[0] = NULL;
-  st[1] = NULL;
+  _num_stateholding = 0;
+  _stateholding = NULL;
+  _is_out = NULL;
   A_INIT (dyn);
 
   
@@ -257,6 +254,8 @@ Cell::Cell (Liberty *l, Process *p)
 
   /* prepare for circuit characterization, in particular collect detailed
      information for state-holding cells.
+
+     First, count them.
   */
   for (node_t *n = nl->hd; n; n = n->next) {
     if (n->v) {
@@ -264,35 +263,47 @@ Cell::Cell (Liberty *l, Process *p)
 	/* there's a gate here */
 	if ((n->v->stateholding && !n->v->unstaticized)
 	    || n->v->manualkeeper != 0) {
-	  if (!is_stateholding) {
-	    is_stateholding = n;
-	  }
-	  else {
-	    warning ("Analysis does not work for cells with multiple state-holding gates");
-	    nl = NULL;
-	    return;
-	  }
+	  _num_stateholding++;
 	}
       }
     }
   }
 
-  if (is_stateholding) {
-    /* -- analyze state-holding operator -- */
-    Assert (is_stateholding->v, "What?");
+  if (_num_stateholding > 0) {
+    MALLOC (_stateholding, struct stateholding_info, _num_stateholding);
+    _num_stateholding = 0;
+
+    /* assign nodes */
+    for (node_t *n = nl->hd; n; n = n->next) {
+      if (n->v) {
+	if (n->v->e_up || n->v->e_dn) {
+	  /* there's a gate here */
+	  if ((n->v->stateholding && !n->v->unstaticized)
+	      || n->v->manualkeeper != 0) {
+	    _stateholding[_num_stateholding++].n = n;
+	  }
+	}
+      }
+    }
+
+    /* collect support */
     A_INIT (_sh_vars);
-    _collect_support (is_stateholding->v->e_up);
-    _collect_support (is_stateholding->v->e_dn);
-    
+    for (int i=0; i < _num_stateholding; i++) {
+      /* -- analyze state-holding operator -- */
+      Assert (_stateholding[i].n->v, "What?");
+      _collect_support (_stateholding[i].n->v->e_up);
+      _collect_support (_stateholding[i].n->v->e_dn);
+    }
     Assert (A_LEN (_sh_vars) > 0, "What?!");
 
-    _tt[0] = bitset_new (1 << A_LEN (_sh_vars));
-    _tt[1] = bitset_new (1 << A_LEN (_sh_vars));
-    bitset_clear (_tt[0]);
-    bitset_clear (_tt[1]);
-    
-    _build_truth_table (is_stateholding->v->e_up, 1);
-    _build_truth_table (is_stateholding->v->e_dn, 0);
+    for (int i=0; i < _num_stateholding; i++) {
+      _stateholding[i].tt[0] = bitset_new (1 << A_LEN (_sh_vars));
+      _stateholding[i].tt[1] = bitset_new (1 << A_LEN (_sh_vars));
+      bitset_clear (_stateholding[i].tt[0]);
+      bitset_clear (_stateholding[i].tt[1]);
+      _build_truth_table (_stateholding[i].n->v->e_up, _stateholding[i].tt[1]);
+      _build_truth_table (_stateholding[i].n->v->e_dn, _stateholding[i].tt[0]);
+    }
   }
 }
 
@@ -433,14 +444,14 @@ int Cell::_eval_expr (act_prs_expr_t *e, unsigned int v)
   }
 }
 
-void Cell::_build_truth_table (act_prs_expr_t *e, int idx)
+void Cell::_build_truth_table (act_prs_expr_t *e, bitset_t *b)
 {
   for (unsigned int i=0; i < (1 << A_LEN (_sh_vars)); i++) {
     if (_eval_expr (e, i)) {
-      bitset_set (_tt[idx], i);
+      bitset_set (b, i);
     }
     else {
-      bitset_clr (_tt[idx], i);
+      bitset_clr (b, i);
     }
   }
 }
@@ -463,13 +474,25 @@ Cell::~Cell()
     FREE (_outvals);
   }
   
-  if (is_stateholding) {
-    bitset_free (_tt[0]);
-    bitset_free (_tt[1]);
-    _tt[0] = NULL;
-    _tt[1] = NULL;
+  if (_num_stateholding > 0) {
+    for (int i=0; i < _num_stateholding; i++) {
+      bitset_free (_stateholding[i].tt[0]);
+      bitset_free (_stateholding[i].tt[1]);
+      if (_stateholding[i].st[0]) {
+	bitset_free (_stateholding[i].st[0]);
+      }
+      if (_stateholding[i].st[1]) {
+	bitset_free (_stateholding[i].st[1]);
+      }
+    }
+    FREE (_stateholding);
+    _stateholding = NULL;
   }
   A_FREE (_sh_vars);
+
+  if (_is_out) {
+    FREE (_is_out);
+  }
 
   for (int i=0; i < A_LEN (dyn); i++) {
     FREE (dyn[i].delay);
@@ -484,15 +507,6 @@ Cell::~Cell()
   }
   if (time_dn) {
     FREE (time_dn);
-  }
-  if (is_out) {
-    FREE (is_out);
-  }
-  if (st[0]) {
-    bitset_free (st[0]);
-  }
-  if (st[1]) {
-    bitset_free (st[1]);
   }
 }
 
@@ -1006,11 +1020,17 @@ void Cell::_emit_leakage ()
 	}
       }
 
-      if (is_stateholding) {
-	if (bitset_tst (_tt[0], val) && bitset_tst (_tt[1], val)) {
-	  /* -- interference -- */
-	  continue;
+      int flag = 0;
+      for (int i=0; i < _num_stateholding; i++) {
+	if (bitset_tst (_stateholding[i].tt[0], val) &&
+	    bitset_tst (_stateholding[i].tt[1], val)) {
+	  flag = 1;
+	  break;
 	}
+      }
+      if (flag) {
+	/* -- interference -- */
+	continue;
       }
     }
       
@@ -1399,8 +1419,6 @@ static int find_multi_driven_assignment (bitset_t *b, bitset_t *bopp,
 
 void Cell::_calc_dynamic ()
 {
-  int sh_outvar;
-
   if (_is_dataflow) {
     
 
@@ -1428,79 +1446,88 @@ void Cell::_calc_dynamic ()
      The assumption is that the state-holding gate is fully controlled
      from the primary input.
   */
-  if (is_stateholding) {
-    int *iomap;
-    int *xmap;
-    int xcount;
+  if (_num_stateholding > 0) {
+    MALLOC (_is_out, int, _num_outputs);
+    for (int i=0; i < _num_outputs; i++) {
+      _is_out[i] = 0;
+    }
     
-    /* -- we know the truth table for the pull-up and pull-down, so
-          create it based directly on input 
-     --*/
-    st[0] = bitset_new (_num_inputs); /* pull-down */
-    bitset_clear (st[0]);
-    st[1] = bitset_new (_num_inputs); /* pull-up */
-    bitset_clear (st[1]);
+    for (int sv=0; sv < _num_stateholding; sv++) {
+      int sh_outvar;
+      int *iomap;
+      int *xmap;
+      int xcount;
+      int *is_out;
+      struct stateholding_info *sh = &_stateholding[sv];
+    
+      /* -- we know the truth table for the pull-up and pull-down, so
+	 create it based directly on input 
+	 --*/
+      sh->st[0] = bitset_new (_num_inputs); /* pull-down */
+      bitset_clear (sh->st[0]);
+      sh->st[1] = bitset_new (_num_inputs); /* pull-up */
+      bitset_clear (sh->st[1]);
 
-    MALLOC (iomap, int, _num_inputs + _num_outputs);
-    for (int i=0; i < _num_inputs + _num_outputs; i++) {
-      iomap[i] = -1;
-    }
-
-    xcount = 0;
-    for (int i=0; i < A_LEN (_sh_vars); i++) {
-      if (_sh_vars[i]->isport) continue;
-      xcount++;
-    }
-
-    if (xcount > 0) {
-      MALLOC (xmap, int, xcount);
-      for (int i=0; i < xcount; i++) {
-	xmap[i] = -1;
+      MALLOC (iomap, int, _num_inputs + _num_outputs);
+      for (int i=0; i < _num_inputs + _num_outputs; i++) {
+	iomap[i] = -1;
       }
-    }
 
-    /* build map from sh_vars to inputs */
-    for (int i=0; i < A_LEN (_sh_vars); i++) {
-      int pos = 0;
-      int opos = _num_inputs;
-      int xpos = 0;
-      for (int j=0; j < A_LEN (nl->bN->ports); j++) {
-	if (nl->bN->ports[j].omit) continue;
-	if (nl->bN->ports[j].c == _sh_vars[i]->id) {
+      xcount = 0;
+      for (int i=0; i < A_LEN (_sh_vars); i++) {
+	if (_sh_vars[i]->isport) continue;
+	xcount++;
+      }
+
+      if (xcount > 0) {
+	MALLOC (xmap, int, xcount);
+	for (int i=0; i < xcount; i++) {
+	  xmap[i] = -1;
+	}
+      }
+
+      /* build map from sh_vars to inputs */
+      for (int i=0; i < A_LEN (_sh_vars); i++) {
+	int pos = 0;
+	int opos = _num_inputs;
+	int xpos = 0;
+	for (int j=0; j < A_LEN (nl->bN->ports); j++) {
+	  if (nl->bN->ports[j].omit) continue;
+	  if (nl->bN->ports[j].c == _sh_vars[i]->id) {
+	    if (nl->bN->ports[j].input) {
+	      iomap[pos] = i;
+	    }
+	    else {
+	      iomap[opos] = i;
+	    }
+	    break;
+	  }
 	  if (nl->bN->ports[j].input) {
-	    iomap[pos] = i;
+	    pos++;
 	  }
 	  else {
-	    iomap[opos] = i;
+	    opos++;
 	  }
-	  break;
 	}
-	if (nl->bN->ports[j].input) {
-	  pos++;
-	}
-	else {
-	  opos++;
-	}
-      }
-      if (pos >= _num_inputs && opos >= (_num_inputs + _num_outputs)) {
-	if (_sh_vars[i]->isport) {
-	  fatal_error ("Map error?");
-	}
-	else {
-	  Assert (xpos < xcount, "Hmmm");
-	  xmap[xpos] = i;
-	  xpos++;
+	if (pos >= _num_inputs && opos >= (_num_inputs + _num_outputs)) {
+	  if (_sh_vars[i]->isport) {
+	    fatal_error ("Map error?");
+	  }
+	  else {
+	    Assert (xpos < xcount, "Hmmm");
+	    xmap[xpos] = i;
+	    xpos++;
+	  }
 	}
       }
-    }
 
-    for (int i=0; i < (1 << _num_inputs); i++) {
-      unsigned int idx = 0;
+      for (int i=0; i < (1 << _num_inputs); i++) {
+	unsigned int idx = 0;
 
-      for (int j=0; j < _num_inputs; j++) {
-	if (iomap[j] != -1) {
-	  if ((i >> j) & 0x1) {
-	    idx |= (1 << iomap[j]);
+	for (int j=0; j < _num_inputs; j++) {
+	  if (iomap[j] != -1) {
+	    if ((i >> j) & 0x1) {
+	      idx |= (1 << iomap[j]);
 	  }
 	}
       }
@@ -1521,108 +1548,130 @@ void Cell::_calc_dynamic ()
 	}
       }
 
-      if (bitset_tst (_tt[0], idx)) {
-	bitset_set (st[0], i);
+      if (bitset_tst (sh->tt[0], idx)) {
+	bitset_set (sh->st[0], i);
       }
-      if (bitset_tst (_tt[1], idx)) {
-	bitset_set (st[1], i);
+      if (bitset_tst (sh->tt[1], idx)) {
+	bitset_set (sh->st[1], i);
       }
-    }
-    if (xcount > 0) {
-      FREE (xmap);
-    }
-    FREE (iomap);
+      }
+      if (xcount > 0) {
+	FREE (xmap);
+      }
+      FREE (iomap);
+      
 
+      /* -- 
+	 if sh is not a port, then check if there is an output that's
+	 exactly the complement of this variable
+	 -- */
 
-    /* -- 
-       if sh is not a port, then check if there is an output that's
-       exactly the complement of this variable
-       -- */
+      MALLOC (is_out, int, _num_outputs);
+      for (int i=0; i < _num_outputs; i++) {
+	is_out[i] = -1;
+      }
+      /* -1 = new, -2 = no, 0 = non-inv, 1 = inv */
 
-    MALLOC (is_out, int, _num_outputs);
-    for (int i=0; i < _num_outputs; i++) {
-      is_out[i] = -1;
-    }
-    /* -1 = new, -2 = no, 0 = non-inv, 1 = inv */
-
-    for (int i=0; i < (1 << _num_inputs); i++) {
-      if (bitset_tst (st[0], i)) {
-	/* pull-down is 1 */
-	for (int j=0; j < _num_outputs; j++) {
-	  if (is_out[j] == -2) continue;
-	  if (bitset_tst (_outvals[j], i)) {
-	    if (is_out[j] == -1) {
-	      is_out[j] = 1;
+      for (int i=0; i < (1 << _num_inputs); i++) {
+	if (bitset_tst (sh->st[0], i)) {
+	  /* pull-down is 1 */
+	  for (int j=0; j < _num_outputs; j++) {
+	    if (is_out[j] == -2) continue;
+	    if (bitset_tst (_outvals[j], i)) {
+	      if (is_out[j] == -1) {
+		is_out[j] = 1;
+	      }
+	      else if (is_out[j] != 1) {
+		is_out[j] = -2;
+	      }
 	    }
-	    else if (is_out[j] != 1) {
-	      is_out[j] = -2;
+	    else {
+	      if (is_out[j] == -1) {
+		is_out[j] = 0;
+	      }
+	      else if (is_out[j] != 0) {
+		is_out[j] = -2;
+	      }
 	    }
 	  }
-	  else {
-	    if (is_out[j] == -1) {
-	      is_out[j] = 0;
+	}
+	else if (bitset_tst (sh->st[1], i)) {
+	  /* pull-up is 1 */
+	  for (int j=0; j < _num_outputs; j++) {
+	    if (is_out[j] == -2) continue;
+	    if (!bitset_tst (_outvals[j], i)) {
+	      if (is_out[j] == -1) {
+		is_out[j] = 1;
+	      }
+	      else if (is_out[j] != 1) {
+		is_out[j] = -2;
+	      }
 	    }
-	    else if (is_out[j] != 0) {
-	      is_out[j] = -2;
+	    else {
+	      if (is_out[j] == -1) {
+		is_out[j] = 0;
+	      }
+	      else if (is_out[j] != 0) {
+		is_out[j] = -2;
+	      }
 	    }
 	  }
 	}
       }
-      else if (bitset_tst (st[1], i)) {
-	/* pull-up is 1 */
-	for (int j=0; j < _num_outputs; j++) {
-	  if (is_out[j] == -2) continue;
-	  if (!bitset_tst (_outvals[j], i)) {
-	    if (is_out[j] == -1) {
-	      is_out[j] = 1;
-	    }
-	    else if (is_out[j] != 1) {
-	      is_out[j] = -2;
-	    }
+
+      sh_outvar = -1;
+      for (int j=0; j < _num_outputs; j++) {
+	if (is_out[j] == 0) {
+	  if (_is_out[j] != 0) {
+	    warning ("Multiple state-holding gates correspond to the same output?");
 	  }
 	  else {
-	    if (is_out[j] == -1) {
-	      is_out[j] = 0;
-	    }
-	    else if (is_out[j] != 0) {
-	      is_out[j] = -2;
-	    }
+	    _is_out[j] = (1+sv);
+	  }
+	  sh_outvar = 2*j;
+	}
+	else if (is_out[j] == 1) {
+	  sh_outvar = 2*j+1;
+	  if (_is_out[j] != 0) {
+	    warning ("Multiple state-holding gates correspond to the same output?");
+	  }
+	  else {
+	    _is_out[j] = -(1+sv);
 	  }
 	}
       }
-    }
-
-    sh_outvar = -1;
-    for (int j=0; j < _num_outputs; j++) {
-      if (is_out[j] == 0) {
-	sh_outvar = 2*j;
-	break;
+      
+      if (sh_outvar == -1) {
+	warning ("Couldn't find output that corresponds to state-holding gate");
       }
-      if (is_out[j] == 1) {
-	sh_outvar = 2*j+1;
-	break;
-      }
-    }
 
-    if (sh_outvar == -1) {
-      warning ("Couldn't find output that corresponds to state-holding gate");
+      FREE (is_out);
     }
   }
 
   /* -- create dynamic scenarios -- */
-  
+
   for (int nout=0; nout < _num_outputs; nout++) {
     int pos = _get_output_pin (nout);
 
     for (int i=0; i < (1 << _num_inputs); i++) {
       /* -- current input vector scenario: i -- */
-      if (is_stateholding && (is_out[nout] == 0 || is_out[nout] == 1)) {
+      if (_num_stateholding > 0 && _is_out[nout] != 0) {
 	int drive_up = -1;
+	int sh_idx;
+	struct stateholding_info *shi;
+	if (_is_out[nout] < 0) {
+	  sh_idx =  -_is_out[nout] - 1;
+	}
+	else {
+	  sh_idx = _is_out[nout] - 1;
+	}
+	shi = &_stateholding[sh_idx];
 	/*-- this output is the state-holding gate --*/
-	if (bitset_tst (st[1], i) && !bitset_tst (st[0], i)) {
+	if (bitset_tst (shi->st[1], i) && !bitset_tst (shi->st[0], i)) {
 	  drive_up = 1;
 	}
-	else if (bitset_tst (st[0], i) && !bitset_tst (st[1], i)) {
+	else if (bitset_tst (shi->st[0], i) && !bitset_tst (shi->st[1], i)) {
 	  drive_up = 0;
 	}
 
@@ -1639,8 +1688,8 @@ void Cell::_calc_dynamic ()
 
 	    /* flip bit j: if this turns the gate SH or opp driven,
 	       we have a scenario */
-	    if (!bitset_tst (st[drive_up], opp)) {
-	      if (bitset_tst (st[1-drive_up], opp)) {
+	    if (!bitset_tst (shi->st[drive_up], opp)) {
+	      if (bitset_tst (shi->st[1-drive_up], opp)) {
 
 		A_NEW (dyn, struct dynamic_case);
 		A_NEXT (dyn).nidx = 2;
@@ -1649,15 +1698,17 @@ void Cell::_calc_dynamic ()
 		A_NEXT (dyn).out_id = nout;
 		A_NEXT (dyn).in_id = j;
 		A_NEXT (dyn).in_init = ((opp >> j) & 1);
-		A_NEXT (dyn).out_init = (drive_up ? 0 : 1) ^ is_out[nout];
+		A_NEXT (dyn).out_init = (drive_up ? 0 : 1) ^
+		  (_is_out[nout] > 0 ? 0 : 1);
 		A_INC (dyn);
 		
 		//printf (" flip %d (comb)\n", j);
 	      }
 	      else {
-		int k = find_driven_assignment (st[1-drive_up], st[drive_up],
-						_num_inputs, j, (1-((i >> j) & 1)),
-						opp);
+		int k = find_driven_assignment (shi->st[1-drive_up],
+						shi->st[drive_up],
+						_num_inputs, j,
+						(1-((i >> j) & 1)), opp);
 		if (k >= 0) {
 		  A_NEW (dyn, struct dynamic_case);
 		  A_NEXT (dyn).nidx = 3;
@@ -1667,7 +1718,8 @@ void Cell::_calc_dynamic ()
 		  A_NEXT (dyn).out_id = nout;
 		  A_NEXT (dyn).in_id = j;
 		  A_NEXT (dyn).in_init = ((opp >> j) & 1);
-		  A_NEXT (dyn).out_init = (drive_up ? 0 : 1) ^ is_out[nout];
+		  A_NEXT (dyn).out_init = (drive_up ? 0 : 1) ^
+		    (_is_out[nout] > 0 ? 0 : 1);
 		  A_INC (dyn);
 		
 		  //printf (" flip %d (sh) ... from ", j);
@@ -1677,8 +1729,10 @@ void Cell::_calc_dynamic ()
 		  //printf ("\n");
 		}
 		else {
-		  k = find_multi_driven_assignment (st[1-drive_up], st[drive_up],
-						    _num_inputs, j, (1-((i>>j)&1)), opp);
+		  k = find_multi_driven_assignment (shi->st[1-drive_up],
+						    shi->st[drive_up],
+						    _num_inputs, j,
+						    (1-((i>>j)&1)), opp);
 		  if (k < 0) {
 		    //printf (" flip %d (sh) not found\n", j);
 		  }
@@ -1692,7 +1746,8 @@ void Cell::_calc_dynamic ()
 		    A_NEXT (dyn).out_id = nout;
 		    A_NEXT (dyn).in_id = j;
 		    A_NEXT (dyn).in_init = ((opp >> j) & 1);
-		    A_NEXT (dyn).out_init = (drive_up ? 0 : 1) ^ is_out[nout];
+		    A_NEXT (dyn).out_init = (drive_up ? 0 : 1) ^
+		      (_is_out[nout] > 0 ? 0 : 1);
 		    A_INC (dyn);
 		    
 		    //printf (" flip %d (sh) ... from ", j);
@@ -1711,12 +1766,7 @@ void Cell::_calc_dynamic ()
 	}
       }
       else {
-	if (is_stateholding) {
-	  warning ("We assume the other outputs are combinational!");
-	}
-	
 	/*-- combinational logic --*/
-	  
 	for (int j=0; j < _num_inputs; j++) {
 	  /* -- current bit being checked: j -- */
 	  unsigned int opp = i ^ (1 << j);
@@ -2072,6 +2122,7 @@ void Cell::_emit_dynamic ()
   if (!nl) return;
   
   for (int nout=0; nout < _num_outputs; nout++) {
+    int is_comb;
     char buf[1024];
     CNLFP (_lfp, "pin(");
     _sprint_output_pin (buf, 1024, nout);
@@ -2084,8 +2135,10 @@ void Cell::_emit_dynamic ()
     if (!_is_dataflow) {
       CNLFP (_lfp, "function : ");
       fprintf (_lfp, "\"");
-      if (!is_stateholding) {
+      if (_num_stateholding == 0 || _is_out[nout] == 0) {
 	int first = 1;
+	is_comb = 1;
+	
 	/*-- print function --*/
 	for (int i=0; i < (1 << _num_inputs); i++) {
 	  if (bitset_tst (_outvals[nout], i)) {
@@ -2099,11 +2152,21 @@ void Cell::_emit_dynamic ()
       }
       else {
 	int first = 1;
+	int sh_idx;
 
-	if (is_out[nout] == 0) {
+	is_comb = 0;
+	
+	if (_is_out[nout] > 0) {
+	  sh_idx = _is_out[nout] - 1;
+	}
+	else {
+	  sh_idx = -_is_out[nout] - 1;
+	}
+
+	if (_is_out[nout] > 0) {
 	  /*-- this output is the state-holding gate --*/
 	  for (int i=0; i < (1 << _num_inputs); i++) {
-	    if (bitset_tst (st[1], i)) {
+	    if (bitset_tst (_stateholding[sh_idx].st[1], i)) {
 	      if (!first) {
 		fprintf (_lfp, "+");
 	      }
@@ -2119,7 +2182,7 @@ void Cell::_emit_dynamic ()
 	  fprintf (_lfp, "*!(");
 	  first = 1;
 	  for (int i=0; i < (1 << _num_inputs); i++) {
-	    if (bitset_tst (st[0], i)) {
+	    if (bitset_tst (_stateholding[sh_idx].st[0], i)) {
 	      if (!first) {
 		fprintf (_lfp, "+");
 	      }
@@ -2129,10 +2192,11 @@ void Cell::_emit_dynamic ()
 	  }
 	  fprintf (_lfp, ")");
 	}
-	else if (is_out[nout] == 1) {
+	else {
+	  Assert (_is_out[nout] < 0, "Hmm");
 	  /*-- this output is the state-holding gate --*/
 	  for (int i=0; i < (1 << _num_inputs); i++) {
-	    if (bitset_tst (st[0], i)) {
+	    if (bitset_tst (_stateholding[sh_idx].st[0], i)) {
 	      if (!first) {
 		fprintf (_lfp, "+");
 	      }
@@ -2148,7 +2212,7 @@ void Cell::_emit_dynamic ()
 	  fprintf (_lfp, "*!(");
 	  first = 1;
 	  for (int i=0; i < (1 << _num_inputs); i++) {
-	    if (bitset_tst (st[1], i)) {
+	    if (bitset_tst (_stateholding[sh_idx].st[1], i)) {
 	      if (!first) {
 		fprintf (_lfp, "+");
 	      }
@@ -2158,11 +2222,9 @@ void Cell::_emit_dynamic ()
 	  }
 	  fprintf (_lfp, ")");
 	}
-	else {
-	  fprintf (_lfp, " ");
-	}
       }
-      fprintf (_lfp, "\";\n");
+      fprintf (_lfp, "\"; /* %s */\n", is_comb ? "combinational" :
+	       "state-holding");
     }
 
     /* -- measurement results -- 

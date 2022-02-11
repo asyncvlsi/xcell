@@ -116,20 +116,35 @@ class Cell {
 
   /** is this a state-holding gate? if so this is the state-holding
       node **/
-  node_t *is_stateholding;
+  int _num_stateholding;
+  struct stateholding_info {
+    node_t *n;
+
+    /**
+       tt[1], tt[0] : pull-up/pull-down truth table, numbering
+       corresponding to sh_vars[]
+    **/
+    bitset_t *tt[2];
+
+    /**
+       used for dynamic cases
+    **/
+    bitset_t *st[2];
+  } *_stateholding;
+
+  /* map from output variable to (state-holding variable+1)
+       +ve means direct output
+       -ve means inverted output
+       0   means not related to any state-holding gate
+  */
+  int *_is_out;
   
   /**
-     _sh_vars is the support for the state-holding variable
+     _sh_vars is the support for all the state-holding variables
   **/
   A_DECL (act_booleanized_var_t *, _sh_vars);
 
-  /**
-     _tt[1], _tt[0] : pull-up/pull-down truth table, numbering
-     corresponding to _sh_vars[]
-  **/
-  bitset_t *_tt[2];
-
-  bitset_t **_outvals; 	// value of outputs, followed by + _sh_vars
+  bitset_t **_outvals; 	// value of outputs, followed by + sh_vars in order
 
   int _num_outputs;	/* number of outputs */
   int _num_inputs;
@@ -139,7 +154,7 @@ class Cell {
   void _add_support_var (ActId *id);
   void _collect_support (act_prs_expr_t *e);
   int _eval_expr (act_prs_expr_t *e, unsigned int v);
-  void _build_truth_table (act_prs_expr_t *e, int idx);
+  void _build_truth_table (act_prs_expr_t *e, bitset_t *b);
 
 
 
@@ -172,8 +187,6 @@ class Cell {
   double *time_dn;
 
   /* -- dynamic cases -- */
-  bitset_t *st[2];
-  int *is_out;
   A_DECL (struct dynamic_case, dyn);
   
 };

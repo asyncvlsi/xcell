@@ -205,16 +205,27 @@ Cell::Cell (Liberty *l, Process *p)
   }
 
   printf ("Cell: %s\n", p->getName());
+  printf (" Ports:");
 
   for (int i=0; i < A_LEN (nl->bN->ports); i++) {
     if (nl->bN->ports[i].omit) continue;
+    printf (" ");
+    ActId *tmp = nl->bN->ports[i].c->toid();
+    tmp->Print (stdout);
+    delete tmp;
     if (nl->bN->ports[i].input) {
+      printf (":I");
       _num_inputs++;
     }
     else {
+      printf (":O");
       _num_outputs++;
     }
+    if (nl->bN->ports[i].bidir) {
+      printf ("B");
+    }
   }
+  printf ("\n");
 
   if (_num_inputs == 0 && _num_outputs == 0) {
     _is_dataflow = 1;

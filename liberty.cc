@@ -216,7 +216,8 @@ Liberty::~Liberty()
  */
 void Liberty::_lib_emit_header (const char *file)
 {
-  fprintf (_lfp, "/* --- Synopsys format .lib file --- */\n");
+  fprintf (_lfp, "/* --- Liberty-format file for timing --- */\n");
+  fprintf (_lfp, "/*     > auto-generated using xcell <     */\n");
   fprintf (_lfp, "/*\n");
   fprintf (_lfp, "      Process: %g\n", config_get_real ("xcell.P_value"));
   fprintf (_lfp, "      Voltage: %g V\n", config_get_real ("xcell.Vdd"));

@@ -1338,7 +1338,6 @@ void Cell::_print_input_case (int idx, int skipmask)
   }
 }
 
-
 static int find_driven_assignment (bitset_t *b, bitset_t *bopp,
 				   int ninputs, int bit_pos, int bit_val,
 				   int base_idx)
@@ -1817,7 +1816,8 @@ void Cell::_calc_dynamic ()
       if (j != 0) {
 	printf (" -> ");
       }
-      _print_input_case (stdout, a, nl, num_inputs, dyn[i].idx[j]);
+      printf (" ***\n");
+      //_print_input_case (stdout, a, nl, num_inputs, dyn[i].idx[j]);
     }
     printf ("\n");
   }
@@ -2283,7 +2283,7 @@ void Cell::_emit_dynamic ()
       }
 
       CNLFP (_lfp, "%s_power(power_%dx%d) {\n",
-	     dyn[i].in_init == 0 ? "rise" : "fall",
+	     dyn[i].out_init == 0 ? "rise" : "fall",
 	     config_get_table_size ("xcell.input_trans"),
 	     config_get_table_size ("xcell.load"));
       _l->_tab();
@@ -2343,10 +2343,10 @@ void Cell::_emit_dynamic ()
 	fprintf (_lfp, "\";\n");
       }
 
-      /* -- cell rise -- */
+      /* -- cell rise/fall -- */
       
       CNLFP (_lfp, "cell_%s(delay_%dx%d) {\n",
-	     dyn[i].in_init == 0 ? "rise" : "fall",
+	     dyn[i].out_init == 0 ? "rise" : "fall",
 	     config_get_table_size ("xcell.input_trans"),
 	     config_get_table_size ("xcell.load"));
       _l->_tab();
@@ -2383,7 +2383,7 @@ void Cell::_emit_dynamic ()
       /* -- transition time -- */
 
       CNLFP (_lfp, "%s_transition(delay_%dx%d) {\n",
-	     dyn[i].in_init == 0 ? "rise" : "fall",
+	     dyn[i].out_init == 0 ? "rise" : "fall",
 	     config_get_table_size ("xcell.input_trans"),
 	     config_get_table_size ("xcell.load"));
       _l->_tab();

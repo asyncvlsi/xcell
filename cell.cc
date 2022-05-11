@@ -280,6 +280,7 @@ Cell::Cell (Liberty *l, Process *p)
     }
   }
 
+  printf ("num-sh = %d\n", _num_stateholding);
   if (_num_stateholding > 0) {
     MALLOC (_stateholding, struct stateholding_info, _num_stateholding);
     _num_stateholding = 0;

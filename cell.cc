@@ -272,7 +272,8 @@ Cell::Cell (Liberty *l, Process *p)
     if (n->v) {
       if (n->v->e_up || n->v->e_dn) {
 	/* there's a gate here */
-	if ((n->v->stateholding && !n->v->unstaticized)
+	n->v->v->id->toid()->Print (stdout);
+	if ((n->v->stateholding && (n->v->unstaticized != 2))
 	    || n->v->manualkeeper != 0) {
 	  _num_stateholding++;
 	}
@@ -280,7 +281,7 @@ Cell::Cell (Liberty *l, Process *p)
     }
   }
 
-  printf ("num-sh = %d\n", _num_stateholding);
+  // printf ("num-sh = %d\n", _num_stateholding);
   if (_num_stateholding > 0) {
     MALLOC (_stateholding, struct stateholding_info, _num_stateholding);
     _num_stateholding = 0;
@@ -290,7 +291,7 @@ Cell::Cell (Liberty *l, Process *p)
       if (n->v) {
 	if (n->v->e_up || n->v->e_dn) {
 	  /* there's a gate here */
-	  if ((n->v->stateholding && !n->v->unstaticized)
+	  if ((n->v->stateholding && (n->v->unstaticized != 2))
 	      || n->v->manualkeeper != 0) {
 	    _stateholding[_num_stateholding++].n = n;
 	  }

@@ -2172,18 +2172,29 @@ int Cell::_run_dynamic ()
 	/* normal delay */
 	if (v >= 0 && v < 0.95*win) {
 	  dyn[i].delay[j+nload*nslew] = v;
-	}	  
+	}
+	else if (v > 0) {
+	  if (verbose) {
+	    warning ("%d %d delay larger than 95%% of window", i, j);
+	    if (verbose > 1) {
+	      _dump_dynamic (i);
+	    }
+	  }
+	}	
       }
       else if (type == 3) {
 	if (v >= 0 && v < win*0.95) {
-	  warning ("negdelay %d %d = %g", i, j, v/1e-12);
+	  if (verbose) {
+	    warning ("negdelay %d %d = %g", i, j, v/1e-12);
+	  }
 	  dyn[i].delay[j+nload*nslew] = -v;
-	  _dump_dynamic (i);
+	  if (verbose > 1) {
+	    _dump_dynamic (i);
+	  }
 	}
       }
       else if (type == 1) {
 	dyn[i].transit[j+nload*nslew] = v;
-	//printf ("   transit %d %d = %g\n", i, j, v/1e-12);
       }
       else if (type == 2) {
 	dyn[i].intpow[j+nload*nslew] = -v*vdd;

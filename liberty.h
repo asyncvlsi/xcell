@@ -25,6 +25,8 @@
 #include <act/act.h>
 #include <act/passes.h>
 
+extern int verbose;
+
 class Liberty {
  public:
   Liberty (const char *file);

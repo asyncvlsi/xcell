@@ -22,6 +22,8 @@
 #include <stdio.h>
 #include "liberty.h"
 
+int verbose;
+
 int main (int argc, char **argv)
 {
   Act *a;
@@ -42,7 +44,10 @@ int main (int argc, char **argv)
   a = new Act (argv[1]);
   a->Expand ();
 
+  config_set_default_int ("xcell.verbose", 0);
   config_set_default_int ("net.emit_parasitics", 1);
+
+  verbose = config_get_int ("xcell.verbose");
 
   ActNetlistPass *np = new ActNetlistPass (a);
   np->run();

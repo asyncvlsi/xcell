@@ -183,6 +183,7 @@ Cell::Cell (Liberty *l, Process *p)
   leakage_power = NULL;
   time_up = NULL;
   time_dn = NULL;
+  fn_override = NULL;
   _num_stateholding = 0;
   _stateholding = NULL;
   _is_out = NULL;
@@ -272,7 +273,6 @@ Cell::Cell (Liberty *l, Process *p)
     if (n->v) {
       if (n->v->e_up || n->v->e_dn) {
 	/* there's a gate here */
-	n->v->v->id->toid()->Print (stdout);
 	if ((n->v->stateholding && (n->v->unstaticized != 2))
 	    || n->v->manualkeeper != 0) {
 	  _num_stateholding++;
@@ -1102,9 +1102,9 @@ int Cell::_run_input_cap ()
   int pos = 0;
   for (int i=0; i < A_LEN (nl->bN->ports); i++) {
     if (nl->bN->ports[i].omit) continue;
-    if (!nl->bN->ports[i].input) continue;
-    fprintf (sfp, "Rdrv%d q%d p%d resistor\n", pos, pos, pos);
     pos++;
+    if (!nl->bN->ports[i].input) continue;
+    fprintf (sfp, "Rdrv%d q%d p%d resistor\n", pos-1, pos-1, pos-1);
   }
   fprintf (sfp, "\n");
 
@@ -1120,17 +1120,18 @@ int Cell::_run_input_cap ()
     for (int j=0; j < ((1 << (_num_inputs-1))); j++) {
       double my_start = i*(1 << (_num_inputs-1))*period + period + period*j;
       
-      fprintf (sfp, ".measure tran cap_tup_%d_%d_0 trig V(q%d) VAL=%g TD=%gp RISE=1 TARG V(p%d) VAL=%g\n", i, j, i, (vdd*0.05),  my_start + window,
-	       i, vdd*(1-config_get_real ("xcell.cap_measure")));
-      fprintf (sfp, ".measure tran cap_tup_%d_%d_1 trig V(q%d) VAL=%g TD=%gp RISE=2 TARG V(p%d) VAL=%g\n", i, j, i, (vdd*0.05),
-	       my_start + window,
-	       i, vdd*(1-config_get_real ("xcell.cap_measure")));
-      fprintf (sfp, ".measure tran cap_tdn_%d_%d_0 trig V(q%d) VAL=%g TD=%gp FALL=1 TARG V(p%d) VAL=%g\n", i, j, i, (vdd*0.95),
-	       my_start + window,
-	       i, vdd*(1-config_get_real ("xcell.cap_measure")));
-      fprintf (sfp, ".measure tran cap_tdn_%d_%d_1 trig V(q%d) VAL=%g TD=%gp FALL=2 TARG V(p%d) VAL=%g\n", i, j, i, (vdd*0.95),
-	       my_start + window,
-	       i, vdd*(1-config_get_real ("xcell.cap_measure")));
+      fprintf (sfp, ".measure tran cap_tup_%d_%d_0 trig V(q%d) VAL=%g TD=%gp RISE=1 TARG V(p%d) VAL=%g\n", i, j,
+	       _get_input_pin (i), (vdd*0.05),  my_start + window,
+	       _get_input_pin (i), vdd*(1-config_get_real ("xcell.cap_measure")));
+      fprintf (sfp, ".measure tran cap_tup_%d_%d_1 trig V(q%d) VAL=%g TD=%gp RISE=2 TARG V(p%d) VAL=%g\n", i, j,
+	       _get_input_pin (i), (vdd*0.05),  my_start + window,
+	       _get_input_pin (i), vdd*(1-config_get_real ("xcell.cap_measure")));
+      fprintf (sfp, ".measure tran cap_tdn_%d_%d_0 trig V(q%d) VAL=%g TD=%gp FALL=1 TARG V(p%d) VAL=%g\n", i, j,
+	       _get_input_pin (i), (vdd*0.95),  my_start + window,
+	       _get_input_pin (i), vdd*(1-config_get_real ("xcell.cap_measure")));
+      fprintf (sfp, ".measure tran cap_tdn_%d_%d_1 trig V(q%d) VAL=%g TD=%gp FALL=2 TARG V(p%d) VAL=%g\n", i, j,
+	       _get_input_pin (i), (vdd*0.95), my_start + window,
+	       _get_input_pin (i), vdd*(1-config_get_real ("xcell.cap_measure")));
     }
   }
 
@@ -1230,7 +1231,7 @@ int Cell::_run_input_cap ()
   FREE (upcnt);
   FREE (dncnt);
 
-  unlink_generic (file);
+  //unlink_generic (file);
   
   return 1;
 }
@@ -1320,6 +1321,11 @@ void Cell::_print_input_cap_cases (FILE *sfp, const char *prefix)
 
 void Cell::_print_input_case (int idx, int skipmask)
 {
+  _print_input_case (_lfp, idx, skipmask);
+}
+
+void Cell::_print_input_case (FILE *fp, int idx, int skipmask)
+{
   char buf[1024];
   ActId *tmp;
   int first = 1;
@@ -1328,17 +1334,18 @@ void Cell::_print_input_case (int idx, int skipmask)
     if (skipmask & (1 << j)) continue;
     
     if (!first) {
-      fprintf (_lfp, "*");
+      fprintf (fp, "*");
     }
     first = 0;
 	    
     if (!((idx >> j) & 1)) {
-      fprintf (_lfp, "!");
+      fprintf (fp, "!");
     }
     _sprint_input_pin (buf, 1024, j);
-    a->mfprintf (_lfp, "%s", buf);
+    a->mfprintf (fp, "%s", buf);
   }
 }
+
 
 static int find_driven_assignment (bitset_t *b, bitset_t *bopp,
 				   int ninputs, int bit_pos, int bit_val,
@@ -1432,10 +1439,6 @@ static int find_multi_driven_assignment (bitset_t *b, bitset_t *bopp,
 void Cell::_calc_dynamic ()
 {
   if (_is_dataflow) {
-    
-
-
-    
     return;
   }
 
@@ -1459,6 +1462,80 @@ void Cell::_calc_dynamic ()
      from the primary input.
   */
   if (_num_stateholding > 0) {
+    char buf[1024];
+    char *ns = NULL;
+    if (_p->getns() && _p->getns() != ActNamespace::Global()) {
+      ns = _p->getns()->Name();
+      snprintf (buf, 1024, "xcell.scenario.%s::%s.dynamic", ns, _p->getName());
+    }
+    else {
+      snprintf (buf, 1024, "xcell.scenario.%s.dynamic", _p->getName());
+    }
+    if (config_exists (buf)) {
+      /* table of scenarios */
+      /* in rise/fall out rise/fall length input1 input2 ... inputN */
+      int len = config_get_table_size (buf);
+      int pos = 0;
+      int *tab = config_get_table_int (buf);
+
+#define CHKME								\
+      do {								\
+	if (pos >= len) {						\
+	  fatal_error ("out of values; error @ %d in %s\n", A_LEN (dyn), buf); \
+	}								\
+      } while (0)
+      
+      while (pos < len) {
+	A_NEW (dyn, struct dynamic_case);
+
+	CHKME;
+	A_NEXT (dyn).in_id = tab[pos++];
+	
+	CHKME;
+	A_NEXT (dyn).in_init = tab[pos++];
+	
+	CHKME;
+	A_NEXT (dyn).out_id = tab[pos++];
+
+	CHKME;
+	A_NEXT (dyn).out_init = tab[pos++];
+	
+	CHKME;
+	A_NEXT (dyn).nidx = tab[pos++];
+	
+	if (A_NEXT (dyn).nidx > 4 || A_NEXT (dyn).nidx < 2) {
+	  fatal_error ("%s: scenario length is %d [out of range]\n", buf,
+		       A_NEXT (dyn).nidx);
+	}
+	
+	for (int i=0; i < A_NEXT (dyn).nidx; i++) {
+	  CHKME;
+	  A_NEXT (dyn).idx[i] = tab[pos++];
+	}
+	A_INC (dyn);
+      }
+
+      if (ns) {
+	snprintf (buf, 1024, "xcell.scenario.%s::%s.function", ns,
+		  _p->getName());
+      }
+      else {
+	snprintf (buf, 1024, "xcell.scenario.%s.function", _p->getName());
+      }
+
+      if (config_exists (buf)) {
+	int len = config_get_table_size (buf);
+	if (len != _num_outputs) {
+	  fatal_error ("%s: need a function per output", buf);
+	}
+	fn_override = config_get_table_string (buf);
+      }
+
+      if (ns) {
+	FREE (ns);
+      }
+    }
+    
     MALLOC (_is_out, int, _num_outputs);
     for (int i=0; i < _num_outputs; i++) {
       _is_out[i] = 0;
@@ -1540,32 +1617,32 @@ void Cell::_calc_dynamic ()
 	  if (iomap[j] != -1) {
 	    if ((i >> j) & 0x1) {
 	      idx |= (1 << iomap[j]);
+	    }
 	  }
 	}
-      }
 
-      for (int j=0; j < _num_outputs; j++) {
-	if (iomap[_num_inputs + j] != -1) {
-	  if (bitset_tst (_outvals[j], i)) {
-	    idx |= (1 << iomap[_num_inputs + j]);
+	for (int j=0; j < _num_outputs; j++) {
+	  if (iomap[_num_inputs + j] != -1) {
+	    if (bitset_tst (_outvals[j], i)) {
+	      idx |= (1 << iomap[_num_inputs + j]);
+	    }
 	  }
 	}
-      }
 
-      for (int j=0; j < xcount; j++) {
-	if (xmap[j] != -1) {
-	  if (bitset_tst (_outvals[j + _num_outputs], i)) {
-	    idx |= (1 << xmap[j]);
+	for (int j=0; j < xcount; j++) {
+	  if (xmap[j] != -1) {
+	    if (bitset_tst (_outvals[j + _num_outputs], i)) {
+	      idx |= (1 << xmap[j]);
+	    }
 	  }
 	}
-      }
 
-      if (bitset_tst (sh->tt[0], idx)) {
-	bitset_set (sh->st[0], i);
-      }
-      if (bitset_tst (sh->tt[1], idx)) {
-	bitset_set (sh->st[1], i);
-      }
+	if (bitset_tst (sh->tt[0], idx)) {
+	  bitset_set (sh->st[0], i);
+	}
+	if (bitset_tst (sh->tt[1], idx)) {
+	  bitset_set (sh->st[1], i);
+	}
       }
       if (xcount > 0) {
 	FREE (xmap);
@@ -1659,6 +1736,11 @@ void Cell::_calc_dynamic ()
 
       FREE (is_out);
     }
+  }
+
+  if (A_LEN (dyn) > 0) {
+    /* user-specified scenarios */
+    return;
   }
 
   /* -- create dynamic scenarios -- */
@@ -2021,7 +2103,10 @@ int Cell::_run_dynamic ()
 	    config_get_string ("xcell.spice_binary"), file, file);
   system (buf);
 
+  double win = window*config_get_real ("xcell.units.time_conv");
+  
   /* -- open measurements, and save data -- */
+  int weird_error = 0;
   for (int nload=0; nload < nsweep; nload++) {
     struct Hashtable *H;
     hash_bucket_t *b;
@@ -2083,16 +2168,17 @@ int Cell::_run_dynamic ()
 	continue;
       }
 
-      if (type == 0 || type == 3) {
-	if (fabs(v - window*config_get_real("xcell.units.time_conv")) >
-	    fabs(v)) {
-	  if (type == 0) {
-	    dyn[i].delay[j+nload*nslew] = v;
-	  }
-	  else {
-	    dyn[i].delay[j+nload*nslew] = -v;
-	  }
-	  //printf ("[%d] delay %d %d = %g\n", type, i, j, v/1e-12);
+      if (type == 0) {
+	/* normal delay */
+	if (v >= 0 && v < 0.95*win) {
+	  dyn[i].delay[j+nload*nslew] = v;
+	}	  
+      }
+      else if (type == 3) {
+	if (v >= 0 && v < win*0.95) {
+	  warning ("negdelay %d %d = %g", i, j, v/1e-12);
+	  dyn[i].delay[j+nload*nslew] = -v;
+	  _dump_dynamic (i);
 	}
       }
       else if (type == 1) {
@@ -2106,10 +2192,12 @@ int Cell::_run_dynamic ()
     hash_free (H);
   }
 
-  unlink_generic (file);
+  if (!weird_error) {
+    unlink_generic (file);
+  }
 
   /* Xyce creates multiple measurement files */
-  if (is_xyce()) {
+  if (!weird_error && is_xyce()) {
     /* -- other measurement files -- */
     for (int i=1; i < config_get_table_size ("xcell.load"); i++) {
       snprintf (buf, 1024, "%s.spi.mt%d", file, i);
@@ -2148,7 +2236,10 @@ void Cell::_emit_dynamic ()
     if (!_is_dataflow) {
       CNLFP (_lfp, "function : ");
       fprintf (_lfp, "\"");
-      if (_num_stateholding == 0 || _is_out[nout] == 0) {
+      if (fn_override) {
+	fprintf (_lfp, "%s", fn_override[nout]);
+      }
+      else if (_num_stateholding == 0 || _is_out[nout] == 0) {
 	int first = 1;
 	is_comb = 1;
 	
@@ -2365,9 +2456,11 @@ void Cell::_emit_dynamic ()
 	  /*-- XXX: fixme: units, internal power definition --*/
 	  dp = dyn[i].delay[j+k*nslew];
 	  dp /= config_get_real ("xcell.units.time_conv");
+#if 0	  
 	  if (dp < 0) {
 	    dp = 0;
 	  }
+#endif	  
 	  fprintf (_lfp, "%g", dp);
 	}
 	fprintf (_lfp, "\"");
@@ -2516,4 +2609,31 @@ int Cell::_run_dflow_input_cap (void)
     }
   }
   return 1;
+}
+
+
+void Cell::_dump_dynamic (int idx)
+{
+  if (idx < 0 || idx >= A_LEN (dyn)) {
+    printf ("Illegal index %d\n", idx);
+    return;
+  }
+
+  dynamic_case *dc = &dyn[idx];
+  char buf[1024];
+
+  printf ("Dynamic case: #%d\n", idx);
+
+  _sprint_output_pin (buf, 1024, dc->out_id);
+  printf ("  output-id: %s (%c)\n", buf, dc->out_init == 0 ? 'r' : 'f' );
+  
+  _sprint_input_pin (buf, 1024, dc->in_id);
+  printf ("      in-id: %s (%c)\n", buf, dc->in_init == 0 ? 'r' : 'f');
+  for (int i=0; i < dc->nidx; i++) {
+    if (i != 0) {
+      printf (" -> ");
+    }
+    _print_input_case (stdout, dc->idx[i]);
+  }
+  printf ("\n");
 }

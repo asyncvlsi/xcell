@@ -168,6 +168,7 @@ class Cell {
   void _print_all_input_cases (FILE *fp, const char *prefix);
   void _print_input_cap_cases (FILE *sfp, const char *prefix);
   void _print_input_case (int idx, int skipmask = 0);
+  void _print_input_case (FILE *fp, int idx, int skipmask = 0);
 
   int _run_leakage ();
   int _run_dflow_leakage ();
@@ -188,6 +189,9 @@ class Cell {
 
   /* -- dynamic cases -- */
   A_DECL (struct dynamic_case, dyn);
+  void _dump_dynamic (int idx);
+
+  char **fn_override;
   
 };
 

@@ -26,8 +26,15 @@ int main (int argc, char **argv)
 {
   Act *a;
   char buf[1024];
+  list_t *l;
 
-  Act::Init (&argc, &argv);
+  l = list_new ();
+  list_append (l, "xcell.conf");
+  list_append (l, "lint.conf");
+
+  Act::Init (&argc, &argv, l);
+
+  list_free (l);
 
   if (argc != 3) {
     fatal_error ("Usage: %s <act-cell-file> <libname>\n", argv[0]);
@@ -37,13 +44,8 @@ int main (int argc, char **argv)
 
   config_set_default_int ("net.emit_parasitics", 1);
 
-  ActCellPass *cp = new ActCellPass (a);
-
   ActNetlistPass *np = new ActNetlistPass (a);
   np->run();
-
-  config_read ("xcell.conf");
-  config_read ("lint.conf");
 
   Liberty L(argv[2]);
   

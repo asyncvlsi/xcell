@@ -167,6 +167,27 @@ static struct Hashtable *parse_measurements (const char *s, const char *param = 
 }
 
 
+static const char *_cellinfo (Process *p)
+{
+  static char buf[10240];
+  char *ns = NULL;
+
+  buf[0] = '\0';
+  
+  if (p) {
+    if (p->getns() && p->getns() != ActNamespace::Global()) {
+      ns = p->getns()->Name();
+      snprintf (buf, 10240, "xcell.cells.%s::%s", ns, p->getName());
+      FREE (ns);
+    }
+    else {
+      snprintf (buf, 10240, "xcell.cells.%s", p->getName());
+    }
+  }
+  return buf;
+}
+
+
 #define CNLFP  _l->_line(); fprintf
 
 
@@ -187,6 +208,8 @@ Cell::Cell (Liberty *l, Process *p)
   _num_stateholding = 0;
   _stateholding = NULL;
   _is_out = NULL;
+  _is_external = 0;
+  _ext_type = 0;
   A_INIT (dyn);
 
   
@@ -205,7 +228,16 @@ Cell::Cell (Liberty *l, Process *p)
     return;
   }
 
-  printf ("Cell: %s\n", p->getName());
+  const char *cprefix = _cellinfo (_p);
+  char buf[1024];
+  snprintf (buf, 1024, "%s.spice", cprefix);
+  if (config_exists (buf)) {
+    _is_external = 1;
+    snprintf (buf, 1024, "%s.type", cprefix);
+    _ext_type = config_get_int (buf);
+  }
+
+  printf ("Cell: %s%s\n", p->getName(), _is_external ? " [external]" : "");
   printf (" Ports:");
 
   for (int i=0; i < A_LEN (nl->bN->ports); i++) {
@@ -261,6 +293,10 @@ Cell::Cell (Liberty *l, Process *p)
 
   if (_is_dataflow) {
     /* we're done! */
+    return;
+  }
+
+  if (_is_external) {
     return;
   }
 
@@ -692,14 +728,14 @@ int Cell::_run_leakage ()
     A_NEXT (outnode) = atrace_lookup (tr, outname[i]);
     if (!A_NEXT (outnode)) {
       if (i < num_outputs) {
-         snprintf (buf, 1024, "p%d", i + _num_inputs);
-	 A_NEXT (outnode) = atrace_lookup (tr, buf);
+	snprintf (buf, 1024, "p%d", i + _num_inputs);
+	A_NEXT (outnode) = atrace_lookup (tr, buf);
       }
       if (!A_NEXT (outnode)) {
-         printf ("Output node `%s' not found", outname[i]);
+	printf ("Output node `%s' not found", outname[i]);
       }
       else {
-         A_INC (outnode);
+	A_INC (outnode);
       }
     }
     else {
@@ -851,10 +887,31 @@ int Cell::_gen_spice_header (FILE *fp)
   }
 
   /*-- dump subcircuit --*/
-  np->Print (fp, _p);
+
+  /* see if a spice file is specified here */
+  const char *cprefix = _cellinfo (_p);
+  char buf[1024];
+
+  snprintf (buf, 1024, "%s.spice", cprefix);
+  if (config_exists (buf)) {
+    int sz;
+    FILE *xfp = fopen (config_get_string (buf), "r");
+    if (!xfp) {
+      fatal_error ("SPICE netlist `%s' not found", config_get_string (buf));
+    }
+    fprintf (fp, "\n*---- begin import from %s\n\n", buf);
+    while ((sz = fread (buf, 1, 1024, xfp)) > 0) {
+      fwrite (buf, 1, sz, fp);
+    }
+    fclose (xfp);
+    fprintf (fp, "\n*---- end import ----\n");
+  }
+  else {
+    /* auto-generate from ACT */
+    np->Print (fp, _p);
+  }
 
   /*-- instantiate circuit --*/
-
   fprintf (fp, "\n\n");
 
   fprintf (fp, "xtst ");
@@ -1463,14 +1520,8 @@ void Cell::_calc_dynamic ()
   */
   if (_num_stateholding > 0) {
     char buf[1024];
-    char *ns = NULL;
-    if (_p->getns() && _p->getns() != ActNamespace::Global()) {
-      ns = _p->getns()->Name();
-      snprintf (buf, 1024, "xcell.scenario.%s::%s.dynamic", ns, _p->getName());
-    }
-    else {
-      snprintf (buf, 1024, "xcell.scenario.%s.dynamic", _p->getName());
-    }
+    const char *cprefix = _cellinfo (_p);
+    snprintf (buf, 1024, "%s.scenario.dynamic", cprefix);
     if (config_exists (buf)) {
       /* table of scenarios */
       /* in rise/fall out rise/fall length input1 input2 ... inputN */
@@ -1515,24 +1566,13 @@ void Cell::_calc_dynamic ()
 	A_INC (dyn);
       }
 
-      if (ns) {
-	snprintf (buf, 1024, "xcell.scenario.%s::%s.function", ns,
-		  _p->getName());
-      }
-      else {
-	snprintf (buf, 1024, "xcell.scenario.%s.function", _p->getName());
-      }
-
+      snprintf (buf, 1024, "%s.scenario.function", cprefix);
       if (config_exists (buf)) {
 	int len = config_get_table_size (buf);
 	if (len != _num_outputs) {
 	  fatal_error ("%s: need a function per output", buf);
 	}
 	fn_override = config_get_table_string (buf);
-      }
-
-      if (ns) {
-	FREE (ns);
       }
     }
     

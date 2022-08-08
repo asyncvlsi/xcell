@@ -194,7 +194,13 @@ class Cell {
   void _dump_dynamic (int idx);
 
   char **fn_override;
-  
+
+  unsigned int _is_external:1;	// if it is external, then we should
+				// not use any ACT information other
+				// than the port list
+  unsigned int _ext_type:3;	// 0 = combinational
+                                // 1 = ffpos, 2 = ffneg
+                                // 3 = latchhi, 4 = latchlo
 };
 
   

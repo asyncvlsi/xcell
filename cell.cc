@@ -865,7 +865,16 @@ int Cell::_gen_spice_header (FILE *fp)
 
   /*-- XXX: power and ground are actually in the netlist --*/
 
-  fprintf (fp, ".include '%s'\n\n", config_get_string ("xcell.tech_setup"));
+  if (config_exists ("xcell.tech_setup")) {
+    fprintf (fp, ".include '%s'\n\n", config_get_string ("xcell.tech_setup"));
+  }
+  else if (getenv ("ACT_HOME") && getenv ("ACT_TECH")) {
+    fprintf (fp, ".include '%s/conf/%s/models.sp'\n\n", getenv ("ACT_HOME"),
+	     getenv ("ACT_TECH"));
+  }
+  else {
+    fatal_error ("No technology/model information? Use xcell.tech_setup.");
+  }
   fprintf (fp, ".global Vdd\n");
   fprintf (fp, ".global GND\n");
 
@@ -1172,23 +1181,24 @@ int Cell::_run_input_cap ()
   double period = config_get_real ("xcell.period");
   double vdd = config_get_real ("xcell.Vdd");
   double window = config_get_real ("xcell.short_window");
-    
+
+  double cap_meas = config_get_real ("xcell.cap_measure");
   for (int i=0; i < _num_inputs; i++) {
     for (int j=0; j < ((1 << (_num_inputs-1))); j++) {
       double my_start = i*(1 << (_num_inputs-1))*period + period + period*j;
       
       fprintf (sfp, ".measure tran cap_tup_%d_%d_0 trig V(q%d) VAL=%g TD=%gp RISE=1 TARG V(p%d) VAL=%g\n", i, j,
-	       _get_input_pin (i), (vdd*0.05),  my_start + window,
-	       _get_input_pin (i), vdd*(1-config_get_real ("xcell.cap_measure")));
-      fprintf (sfp, ".measure tran cap_tup_%d_%d_1 trig V(q%d) VAL=%g TD=%gp RISE=2 TARG V(p%d) VAL=%g\n", i, j,
-	       _get_input_pin (i), (vdd*0.05),  my_start + window,
-	       _get_input_pin (i), vdd*(1-config_get_real ("xcell.cap_measure")));
+	       _get_input_pin (i), vdd*0.05,  my_start + window,
+	       _get_input_pin (i), vdd*(1-cap_meas));
+      fprintf (sfp, ".measure tran cap_tup_%d_%d_1 trig V(q%d) VAL=%g TD=%gp RISE=1 TARG V(p%d) VAL=%g\n", i, j,
+	       _get_input_pin (i), vdd*0.05,  my_start + window*3,
+	       _get_input_pin (i), vdd*(1-cap_meas));
       fprintf (sfp, ".measure tran cap_tdn_%d_%d_0 trig V(q%d) VAL=%g TD=%gp FALL=1 TARG V(p%d) VAL=%g\n", i, j,
-	       _get_input_pin (i), (vdd*0.95),  my_start + window,
-	       _get_input_pin (i), vdd*(1-config_get_real ("xcell.cap_measure")));
-      fprintf (sfp, ".measure tran cap_tdn_%d_%d_1 trig V(q%d) VAL=%g TD=%gp FALL=2 TARG V(p%d) VAL=%g\n", i, j,
-	       _get_input_pin (i), (vdd*0.95), my_start + window,
-	       _get_input_pin (i), vdd*(1-config_get_real ("xcell.cap_measure")));
+	       _get_input_pin (i), vdd*0.95,  my_start + window*2,
+	       _get_input_pin (i), vdd*(1-cap_meas));
+      fprintf (sfp, ".measure tran cap_tdn_%d_%d_1 trig V(q%d) VAL=%g TD=%gp FALL=1 TARG V(p%d) VAL=%g\n", i, j,
+	       _get_input_pin (i), vdd*0.95, my_start + window*4,
+	       _get_input_pin (i), vdd*(1-cap_meas));
     }
   }
 
@@ -1277,18 +1287,18 @@ int Cell::_run_input_cap ()
     time_up[i] /= upcnt[i];
     time_dn[i] /= dncnt[i];
 
-    time_up[i] = time_up[i]/(log(1/config_get_real ("xcell.cap_measure"))*
+    time_up[i] = time_up[i]/(log(1/(cap_meas))*
 			     config_get_real ("xcell.R_value")*
 			     config_get_real ("xcell.units.resis_conv"));
 
-    time_dn[i] = time_dn[i]/(log(1/config_get_real ("xcell.cap_measure"))*
+    time_dn[i] = time_dn[i]/(log(1/(cap_meas))*
 			     config_get_real ("xcell.R_value")*
 			     config_get_real ("xcell.units.resis_conv"));
   }
   FREE (upcnt);
   FREE (dncnt);
 
-  unlink_generic (file);
+  //unlink_generic (file);
   
   return 1;
 }

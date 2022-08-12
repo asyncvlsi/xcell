@@ -1298,7 +1298,7 @@ int Cell::_run_input_cap ()
   FREE (upcnt);
   FREE (dncnt);
 
-  //unlink_generic (file);
+  unlink_generic (file);
   
   return 1;
 }

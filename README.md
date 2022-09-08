@@ -1,4 +1,4 @@
-# xcell: A gate library characterizer
+# xcell: a cell library characterizer
 
 `xcell` takes a cell library in the ACT format as well as a top-level module that instantiates all the cells to be characterized as input.
 It creates a large number of scenarios that are simulated using an external SPICE simulator, and the results of SPICE simulation are analyzed.

@@ -23,4 +23,4 @@ This program is for use with [the ACT toolkit](https://github.com/asyncvlsi/act)
 
 ### Requirements
 
-`xcell` invokes an external SPICE simulator. Currently it supports `Xyce` as well as `hspice` as external SPICE simulators. The simulator to be used is specified in the `xcell.conf` file.
+`xcell` invokes an external SPICE simulator. Currently it supports `Xyce` as well as `hspice` as external SPICE simulators. The simulator to be used is specified in the `xcell.conf` file. The simulator binary must be in the current path so that `xcell` can invoke it successfully.

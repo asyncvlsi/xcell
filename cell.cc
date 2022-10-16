@@ -837,8 +837,9 @@ int Cell::_run_leakage ()
       lk = b->f;
 
       if (lk < 0) {
-	warning ("%s: measurement failed for leakage, scenario %d (%g)",
+	warning ("%s: unusual measurement for leakage, scenario %d (%g)",
 		 _p->getName(), i, lk);
+	lk = -lk;
       }
       leakage_power[i] = lk;
     }

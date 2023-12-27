@@ -12,7 +12,15 @@ To run, use:
 xcell [-Ttech] top.act out
 ```
 
-This will create `out.lib`. `xcell` also requires a configuration file `xcell.conf` in the current directory that is used to specify the details of the characterization process. An example configuration is provided in the `example/` directory.
+This will create `out.lib`. `xcell` also requires:
+  - A configuration file `xcell.conf` in the current directory that is used to specify the details of the characterization process.
+  - A spice file `stdspice.spi` containing the spice models for the devices. 
+
+An example configuration is provided in the `example/` directory.
+
+### Input Format
+
+The input actfile must have a process called `characterize` with no parameters, which is instantiated at the end of the file. The process must have a list of cells named `g1`, `g2` ... `gN` in order. xcell starts looking for these cells sequentially, starting from `g1`. If any of them are not found, it exits. See `char.act` in the `example` directory for the exact input format that is required.
 
 ### Installation
 

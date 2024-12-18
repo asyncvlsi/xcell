@@ -2103,8 +2103,8 @@ int Cell::_run_dynamic ()
 
   fprintf (sfp, "\n.tran 0.1p ");
   print_number (sfp, 1e-12*tm*period);
-  fprintf (sfp, "\n");
   if (is_xyce()) {
+    fprintf (sfp, "\n");
 #if 0
     fprintf (sfp, "\n.print tran");
     for (int i=0; i < num_inputs + _num_outputs; i++) {
@@ -2122,7 +2122,7 @@ int Cell::_run_dynamic ()
   }
   else if (is_hspice()) {
     /* -- sweep load! -- */
-    fprintf (sfp, "SWEEP load POI %d", config_get_table_size ("xcell.load"));
+    fprintf (sfp, " SWEEP load POI %d", config_get_table_size ("xcell.load"));
     double *load_table = config_get_table_real ("xcell.load");
     for (int i=0; i < config_get_table_size ("xcell.load"); i++) {
       fprintf (sfp, " %gf", load_table[i]);

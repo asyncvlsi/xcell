@@ -86,6 +86,50 @@ static void unlink_generic_trace (const char *s)
   unlink_files (s, ext);
 }
 
+static void print_number (FILE *fp, double x)
+{
+  if (x > 1e3) {
+    fprintf (fp, "%gK", x*1e-3);
+  }
+  if (x > 1e-3) {
+    fprintf (fp, "%g", x);
+  }
+  else if (x > 1e-9) {
+    fprintf (fp, "%gU", x*1e6);
+  }
+  else {
+    fprintf (fp, "%gP", x*1e12);
+  }
+}
+
+/*
+  start, end in picoseconds
+*/
+static void print_window (FILE *fp, double start, double end, int val)
+{
+  static double vdd = -1;
+  if (vdd == -1) {
+    vdd = config_get_real ("xcell.Vdd");
+  }
+
+  fprintf (fp, "+");
+  print_number (fp, 1e-12*start);
+  if (val) {
+    fprintf (fp, " %g ", vdd);
+  }
+  else {
+    fprintf (fp, " 0 ");
+  }
+  print_number (fp, 1e-12*end);
+  if (val) {
+    fprintf (fp, " %g\n", vdd);
+  }
+  else {
+    fprintf (fp, " 0\n");
+  }
+}
+
+
 static struct Hashtable *parse_measurements (const char *s, const char *param = NULL, int skip = 0)
 {
   FILE *fp;
@@ -607,14 +651,19 @@ int Cell::_run_leakage ()
 		 lk_window, period);
   }
   for (int i=0; i < (1 << _num_inputs); i++) {
-    fprintf (sfp, ".measure tran current_%d avg i(Vv1) from %gp to %gp\n",
-	     i, tm*period + lk_window, (tm+1)*period - lk_window);
+    fprintf (sfp, ".measure tran current_%d avg i(Vv1) from ", i);
+    print_number (sfp, tm*period*1e-12);
+    fprintf (sfp, " to ");
+    print_number (sfp, ((tm+1)*period - lk_window)*1e-12);
+    fprintf (sfp, "\n");
     fprintf (sfp, ".measure tran leak_%d PARAM='-current_%d*%g'\n", i, i,
 	     vdd);
     tm++;
   }
 
-  fprintf (sfp, ".tran 0.1p %gp\n", tm*period);
+  fprintf (sfp, ".tran 0.1p ");
+  print_number (sfp, tm*period*1e-12);
+  fprintf (sfp, "\n");
 
   if (is_hspice()) {
     fprintf (sfp, ".options post post_version=9601\n");
@@ -1025,12 +1074,7 @@ void Cell::_print_all_input_cases (FILE *sfp, const char *prefix)
 	     _get_input_pin (k), prefix, _get_input_pin (k));
     int tm = 1;
     for (int i=0; i < (1 << _num_inputs); i++) {
-      if ((i >> k) & 0x1) {
-	fprintf (sfp, "+%gp %g %gp %g\n", tm*period + 1, vdd, (tm+1)*period, vdd);
-      }
-      else {
-	fprintf (sfp, "+%gp 0 %gp 0\n", tm*period + 1, (tm+1)*period);
-      }
+      print_window (sfp, tm*period+1, (tm+1)*period, (i >> k) & 0x1);
       tm++;
     }
     fprintf (sfp, "+)\n\n");
@@ -1188,18 +1232,29 @@ int Cell::_run_input_cap ()
     for (int j=0; j < ((1 << (_num_inputs-1))); j++) {
       double my_start = i*(1 << (_num_inputs-1))*period + period + period*j;
       
-      fprintf (sfp, ".measure tran cap_tup_%d_%d_0 trig V(q%d) VAL=%g TD=%gp RISE=1 TARG V(p%d) VAL=%g\n", i, j,
-	       _get_input_pin (i), vdd*0.05,  my_start + window,
-	       _get_input_pin (i), vdd*(1-cap_meas));
-      fprintf (sfp, ".measure tran cap_tdn_%d_%d_0 trig V(q%d) VAL=%g TD=%gp FALL=1 TARG V(p%d) VAL=%g\n", i, j,
-	       _get_input_pin (i), vdd*0.95,  my_start + window*2,
-	       _get_input_pin (i), vdd*(1-cap_meas));
-      fprintf (sfp, ".measure tran cap_tup_%d_%d_1 trig V(q%d) VAL=%g TD=%gp RISE=1 TARG V(p%d) VAL=%g\n", i, j,
-	       _get_input_pin (i), vdd*0.05,  my_start + window*3,
-	       _get_input_pin (i), vdd*(1-cap_meas));
-      fprintf (sfp, ".measure tran cap_tdn_%d_%d_1 trig V(q%d) VAL=%g TD=%gp FALL=1 TARG V(p%d) VAL=%g\n", i, j,
-	       _get_input_pin (i), vdd*0.95, my_start + window*4,
-	       _get_input_pin (i), vdd*(1-cap_meas));
+      fprintf (sfp, ".measure tran cap_tup_%d_%d_0 trig V(q%d) VAL=%g TD=",
+	       i, j, _get_input_pin (i), vdd*0.05);
+      print_number (sfp, 1e-12*(my_start + window));
+      fprintf (sfp, " RISE=1 TARG V(p%d) VAL=%g\n", _get_input_pin (i),
+	       vdd*(1-cap_meas));
+
+      fprintf (sfp, ".measure tran cap_tdn_%d_%d_0 trig V(q%d) VAL=%g TD=",
+	       i, j,  _get_input_pin (i), vdd*0.95);
+      print_number (sfp, 1e-12*(my_start + window*2));
+      fprintf (sfp, " FALL=1 TARG V(p%d) VAL=%g\n",  _get_input_pin (i),
+	       vdd*(1-cap_meas));
+      
+      fprintf (sfp, ".measure tran cap_tup_%d_%d_1 trig V(q%d) VAL=%g TD=",
+	       i, j, _get_input_pin (i), vdd*0.05);
+      print_number (sfp, 1e-12*(my_start + window*3));
+      fprintf (sfp, " RISE=1 TARG V(p%d) VAL=%g\n", _get_input_pin (i),
+	       vdd*(1-cap_meas));
+      
+      fprintf (sfp, ".measure tran cap_tdn_%d_%d_1 trig V(q%d) VAL=%g TD=",
+	       i, j, _get_input_pin (i), vdd*0.95);
+      print_number (sfp, 1e-12*(my_start + window*4));
+      fprintf (sfp, " FALL=1 TARG V(p%d) VAL=%g\n", _get_input_pin (i),
+	       vdd*(1-cap_meas));
     }
   }
 
@@ -1342,12 +1397,7 @@ void Cell::_print_input_cap_cases (FILE *sfp, const char *prefix)
     /* prefix: just go through all possible cases */
     for (int p=0; p < i; p++) {
       for (int q=0; q < (1 << (_num_inputs-1)); q++) {
-	if ((q >> (i-1)) & 1) {
-	  fprintf (sfp, "+%gp %g %gp %g\n", tm*period + 1, vdd, (tm+1)*period, vdd);
-	}
-	else {
-	  fprintf (sfp, "+%gp 0 %gp 0\n", tm*period + 1, (tm+1)*period);
-	}
+	print_window (sfp, tm*period + 1, (tm+1)*period, (q >> (i-1)) & 1);
 	tm++;
       }
     }
@@ -1355,15 +1405,15 @@ void Cell::_print_input_cap_cases (FILE *sfp, const char *prefix)
     /* -- now it is my turn -- */
     for (int q=0; q < (1 << (_num_inputs-1)); q++) {
       double offset = tm*period;
-      fprintf (sfp, "+%gp %g %gp %g\n", offset + 1, 0.0, offset + window, 0.0);
+      print_window (sfp, offset+1, offset+window, 0);
       offset += window;
-      fprintf (sfp, "+%gp %g %gp %g\n", offset + 1, vdd, offset + window, vdd);
+      print_window (sfp, offset+1, offset+window, 1);
       offset += window;
-      fprintf (sfp, "+%gp %g %gp %g\n", offset + 1, 0.0, offset + window, 0.0);
+      print_window (sfp, offset+1, offset+window, 0);
       offset += window;
-      fprintf (sfp, "+%gp %g %gp %g\n", offset + 1, vdd, offset + window, vdd);
+      print_window (sfp, offset+1, offset+window, 1);
       offset += window;
-      fprintf (sfp, "+%gp %g %gp %g\n", offset + 1, 0.0, offset + window, 0.0);
+      print_window (sfp, offset+1, offset+window, 0);
       offset += window;
       tm++;
       if (offset >= tm*period) {
@@ -1374,12 +1424,7 @@ void Cell::_print_input_cap_cases (FILE *sfp, const char *prefix)
     /* -- now rest -- */
     for (int p=i+1; p < _num_inputs; p++) {
       for (int q=0; q < (1 << (_num_inputs-1)); q++) {
-	if ((q >> i) & 1) {
-	  fprintf (sfp, "+%gp %g %gp %g\n", tm*period + 1, vdd, (tm+1)*period, vdd);
-	}
-	else {
-	  fprintf (sfp, "+%gp 0 %gp 0\n", tm*period + 1, (tm+1)*period);
-	}
+	print_window (sfp, tm*period+1, (tm+1)*period, (q >> i) & 1);
 	tm++;
       }
     }
@@ -2024,12 +2069,12 @@ int Cell::_run_dynamic ()
     for (int ns=0; ns < nslew; ns++) {
       for (int j=0; j < A_LEN (dyn); j++) {
 	for (int k=0; k < dyn[j].nidx; k++) {
+	  int ival = ((dyn[j].idx[k] >> i) & 1);
 	  double val = ((dyn[j].idx[k] >> i) & 1) ? vdd : 0.0;
 
 	  if (k != (dyn[j].nidx-1) || i != (dyn[j].in_id)) {
-	    fprintf (sfp, "+%gp %g %gp %g\n", tm*period +
-		     0.25*window + k*window, val,
-		     tm*period + (k+1)*window, val);
+	    print_window (sfp, tm*period + 0.25*window + k*window,
+			  tm*period + (k+1)*window, ival);
 	  }
 	  else {
 	    double correction = 0.0;
@@ -2041,7 +2086,8 @@ int Cell::_run_dynamic ()
 	      correction = (config_get_real ("xcell.waveform.fall_high") -
 			    config_get_real ("xcell.waveform.fall_low"))/100.0;
 	    }
-	    fprintf (sfp, "+%gp %g %gp %g\n", tm*period + k*window + slew_table[ns]/correction, val, tm*period + (k+1)*window, val);
+	    print_window (sfp, tm*period + k*window + slew_table[ns]/correction,
+			  tm*period + (k+1)*window, ival);
 
 	    if (slew_table[ns]/correction >= window) {
 	      warning ("Window is too small; needs to be at least %g\n",
@@ -2055,8 +2101,10 @@ int Cell::_run_dynamic ()
     fprintf (sfp, "\n");
   }
 
+  fprintf (sfp, "\n.tran 0.1p ");
+  print_number (sfp, 1e-12*tm*period);
+  fprintf (sfp, "\n");
   if (is_xyce()) {
-    fprintf (sfp, "\n.tran 0.1p %gp\n", tm*period);
 #if 0
     fprintf (sfp, "\n.print tran");
     for (int i=0; i < num_inputs + _num_outputs; i++) {
@@ -2073,8 +2121,6 @@ int Cell::_run_dynamic ()
     fprintf (sfp, "\n\n");
   }
   else if (is_hspice()) {
-    fprintf (sfp, "\n.tran 0.1p %gp ", tm*period);
-
     /* -- sweep load! -- */
     fprintf (sfp, "SWEEP load POI %d", config_get_table_size ("xcell.load"));
     double *load_table = config_get_table_real ("xcell.load");

@@ -200,6 +200,9 @@ static struct Hashtable *parse_measurements (const char *s, const char *param = 
     }
     
     if (sscanf (s, "%lg", &v) != 1) {
+      if (strncmp (s, "FAILED", 6) == 0) {
+	warning (">> Measurement %s failed", b->key);
+      }
       hash_delete (H, b->key);
       continue;
     }
@@ -1331,13 +1334,14 @@ int Cell::_run_input_cap ()
 
   for (int i=0; i < _num_inputs; i++) {
     if (upcnt[i] != dncnt[i]) {
-      warning ("What?!");
+      warning ("Mismatch between rise and fall measurement counts for input pin #%d", i);
     }
     if (i > 0 && upcnt[i] != upcnt[i-1]) {
-      warning ("What?!!");
+      warning ("Mismatch between rise meaasurement counts for input pin #%d v/s #%d", i,
+	       i-1);
     }
     if (upcnt[i] == 0 || dncnt[i] == 0) {
-      warning ("Bad news: no counts for scenario %d", i);
+      warning ("Bad news: no counts for input pin #%d", i);
       continue;
     }
     time_up[i] /= upcnt[i];
@@ -1648,9 +1652,9 @@ void Cell::_calc_dynamic ()
       /* -- we know the truth table for the pull-up and pull-down, so
 	 create it based directly on input 
 	 --*/
-      sh->st[0] = bitset_new (_num_inputs); /* pull-down */
+      sh->st[0] = bitset_new (1 << _num_inputs); /* pull-down */
       bitset_clear (sh->st[0]);
-      sh->st[1] = bitset_new (_num_inputs); /* pull-up */
+      sh->st[1] = bitset_new (1 << _num_inputs); /* pull-up */
       bitset_clear (sh->st[1]);
 
       MALLOC (iomap, int, _num_inputs + _num_outputs);

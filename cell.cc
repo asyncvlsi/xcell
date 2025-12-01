@@ -177,7 +177,7 @@ static struct Hashtable *parse_measurements (const char *s, const char *param = 
       return H;
     }
 
-    b = hash_add (H, s);
+    b = hash_add (H, strdup(s));
     b->f = 0.0;
 
     s = strtok (NULL, " \t");

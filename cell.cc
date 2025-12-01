@@ -89,16 +89,16 @@ static void unlink_generic_trace (const char *s)
 static void print_number (FILE *fp, double x)
 {
   if (x > 1e3) {
-    fprintf (fp, "%gK", x*1e-3);
+    fprintf (fp, "%fK", x*1e-3);
   }
   if (x > 1e-3) {
-    fprintf (fp, "%g", x);
+    fprintf (fp, "%f", x);
   }
   else if (x > 1e-9) {
-    fprintf (fp, "%gU", x*1e6);
+    fprintf (fp, "%fU", x*1e6);
   }
   else {
-    fprintf (fp, "%gP", x*1e12);
+    fprintf (fp, "%fP", x*1e12);
   }
 }
 

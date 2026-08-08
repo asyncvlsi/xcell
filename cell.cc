@@ -343,7 +343,9 @@ Cell::Cell (Liberty *l, Process *p)
     return;
   }
 
-  if (_is_external) {
+  if (_is_external && (_ext_type != 0)) {
+    /* external characterization, timing arcs have to be manually
+       specified */
     return;
   }
 

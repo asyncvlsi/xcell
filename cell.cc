@@ -657,7 +657,7 @@ int Cell::_run_leakage ()
   }
   for (int i=0; i < (1 << _num_inputs); i++) {
     fprintf (sfp, ".measure tran current_%d avg i(Vv1) from ", i);
-    print_number (sfp, tm*period*1e-12);
+    print_number (sfp, (tm*period + lk_window)*1e-12);
     fprintf (sfp, " to ");
     print_number (sfp, ((tm+1)*period - lk_window)*1e-12);
     fprintf (sfp, "\n");

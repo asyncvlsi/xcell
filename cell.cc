@@ -1252,7 +1252,7 @@ int Cell::_run_input_cap ()
 	       i, j,  _get_input_pin (i), vdd*0.95);
       print_number (sfp, 1e-12*(my_start + window*2));
       fprintf (sfp, " FALL=1 TARG V(p%d) VAL=%g\n",  _get_input_pin (i),
-	       vdd*(1-cap_meas));
+	       vdd*cap_meas);
       
       fprintf (sfp, ".measure tran cap_tup_%d_%d_1 trig V(q%d) VAL=%g TD=",
 	       i, j, _get_input_pin (i), vdd*0.05);
@@ -1264,7 +1264,7 @@ int Cell::_run_input_cap ()
 	       i, j, _get_input_pin (i), vdd*0.95);
       print_number (sfp, 1e-12*(my_start + window*4));
       fprintf (sfp, " FALL=1 TARG V(p%d) VAL=%g\n", _get_input_pin (i),
-	       vdd*(1-cap_meas));
+	       vdd*cap_meas);
     }
   }
 

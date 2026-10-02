@@ -324,9 +324,8 @@ Cell::Cell (Liberty *l, Process *p)
   
   if (_num_inputs == 0) {
     warning ("Cell %s: no inputs?", nl->bN->p->getName());
-    nl = NULL;
-    return;
   }
+
   if (_num_inputs > 8) {
     warning ("High fan-in cell?");
     nl = NULL;
@@ -1176,6 +1175,9 @@ void Cell::_emit_leakage ()
       }
       a->mfprintf (_lfp, "%s", buf);
     }
+    if (_num_inputs == 0) {
+      fprintf (_lfp, "1");
+    }
     fprintf (_lfp, "\";\n");
     CNLFP (_lfp, "value : %g;\n", lk/config_get_real ("xcell.units.power_conv"));
     _l->_untab();
@@ -1192,6 +1194,9 @@ int Cell::_run_input_cap ()
   char file[1024];
 
   if (!nl) {
+    return 0;
+  }
+  if (_num_inputs == 0) {
     return 0;
   }
 
@@ -2059,7 +2064,9 @@ int Cell::_run_dynamic ()
   int tm;
 
   if (A_LEN (dyn) == 0) {
-    warning ("Cell characterization failed; no arcs detected?");
+    if (_num_inputs != 0) {
+      warning ("Cell characterization failed; no arcs detected?");
+    }
     fclose (sfp);
     snprintf (buf, 1024, "%s.spi", file);
     unlink (buf);
@@ -2353,6 +2360,16 @@ void Cell::_emit_dynamic ()
       fprintf (_lfp, "\"");
       if (fn_override) {
 	fprintf (_lfp, "%s", fn_override[nout]);
+      }
+      else if (_num_inputs == 0) {
+	/* constant */
+	is_comb = 1;
+	if (bitset_tst (_outvals[nout], 0)) {
+	  fprintf (_lfp, "1");
+	}
+	else {
+	  fprintf (_lfp, "0");
+	}
       }
       else if (_num_stateholding == 0 || _is_out[nout] == 0) {
 	int first = 1;

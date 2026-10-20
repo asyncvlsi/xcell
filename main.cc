@@ -41,6 +41,14 @@ int main (int argc, char **argv)
   if (argc != 3) {
     fatal_error ("Usage: %s <act-cell-file> <libname>\n", argv[0]);
   }
+
+  if (config_exists ("net.weak_sharing")) {
+    // turn off weak sharing for characterization
+    int *t = config_get_table_int ("net.weak_sharing");
+    t[0] = 1;
+    t[1] = 1;
+  }
+
   a = new Act (argv[1]);
   a->Expand ();
 

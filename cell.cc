@@ -89,16 +89,16 @@ static void unlink_generic_trace (const char *s)
 static void print_number (FILE *fp, double x)
 {
   if (x > 1e3) {
-    fprintf (fp, "%.9gK", x*1e-3);
+    fprintf (fp, "%16.9gK", x*1e-3);
   }
   if (x > 1e-3) {
-    fprintf (fp, "%.9g", x);
+    fprintf (fp, "%16.9g", x);
   }
   else if (x > 1e-9) {
-    fprintf (fp, "%.9gU", x*1e6);
+    fprintf (fp, "%16.9gU", x*1e6);
   }
   else {
-    fprintf (fp, "%.9gP", x*1e12);
+    fprintf (fp, "%16.9gP", x*1e12);
   }
 }
 
@@ -2073,6 +2073,13 @@ int Cell::_run_dynamic ()
     return 0;
   }
 
+  if (verbose > 2) {
+    for (int i=0; i < A_LEN (dyn); i++) {
+      _dump_dynamic (i);
+    }
+  }
+
+
   for (int i=0; i < _num_inputs; i++) {
     fprintf (sfp, "Vn%d p%d 0 PWL (0p 0 1000p %g\n", _get_input_pin (i),
 	     _get_input_pin (i),
@@ -2081,6 +2088,7 @@ int Cell::_run_dynamic ()
     tm = 1;
     /*-- this has to be done with different input slew --*/
     for (int ns=0; ns < nslew; ns++) {
+
       for (int j=0; j < A_LEN (dyn); j++) {
 	for (int k=0; k < dyn[j].nidx; k++) {
 	  int ival = ((dyn[j].idx[k] >> i) & 1);
@@ -2102,13 +2110,16 @@ int Cell::_run_dynamic ()
 	    }
 	    print_window (sfp, tm*period + k*window + slew_table[ns]/correction,
 			  tm*period + (k+1)*window, ival);
-
 	    if (slew_table[ns]/correction >= window) {
 	      warning ("Window is too small; needs to be at least %g\n",
 		       slew_table[ns]/correction);
 	    }
 	  }
 	}
+	/* keep signal stable to the end of this window */
+	int ival = ((dyn[j].idx[dyn[j].nidx-1] >> i) & 1);
+	print_window (sfp, tm*period + dyn[j].nidx*window, (tm+1)*period, ival);
+
 	tm++;
       }
     }
@@ -2286,7 +2297,7 @@ int Cell::_run_dynamic ()
 	}
 	else if (v > 0) {
 	  if (verbose) {
-	    warning ("%d %d delay larger than 95%% of window", i, j);
+	    warning ("Dynamic scenario #%d, slew #%d delay (%g) larger than 95%% of window (%g)", i, j, v, 0.95*win);
 	    if (verbose > 1) {
 	      _dump_dynamic (i);
 	    }
@@ -2754,7 +2765,7 @@ void Cell::_dump_dynamic (int idx)
   dynamic_case *dc = &dyn[idx];
   char buf[1024];
 
-  printf ("Dynamic case: #%d\n", idx);
+  printf ("Dynamic case: #%d / length %d\n", idx, dc->nidx);
 
   _sprint_output_pin (buf, 1024, dc->out_id);
   printf ("  output-id: %s (%c)\n", buf, dc->out_init == 0 ? 'r' : 'f' );

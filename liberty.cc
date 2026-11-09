@@ -294,15 +294,35 @@ void Liberty::_lib_emit_header (const char *file)
   NLFP (_lfp, "default_wire_load : \"wlm1\";\n");
 
   /* -- templates -- */
-  _lib_emit_template ("lu_table", "delay");
-  _lib_emit_template ("power_lut", "power");
+  _lib_emit_template ("lu_table", "delay", _trans_cnt, _load_cnt);
+  _lib_emit_template ("power_lut", "power", _trans_cnt, _load_cnt);
+
+  /* -- extra templates -- */
+  if (config_exists ("xcell.extra_templates")) {
+    int cnt = config_get_table_size ("xcell.extra_templates");
+    int *tab = config_get_table_int ("xcell.extra_templates");
+    for (int i=0; i < cnt/2; i++) {
+      int trans = tab[2*i];
+      int load = tab[2*i+1];
+
+      if (trans == 0) {
+	trans = config_get_table_size ("xcell.input_trans");
+      }
+      if (load == 0) {
+	load = config_get_table_size ("xcell.load");
+      }
+      _lib_emit_template ("lu_table", "delay", trans, load);
+      _lib_emit_template ("power_lut", "power", trans, load);
+    }
+  }
 }
 
 
-void Liberty::_lib_emit_template (const char *name, const char *prefix)
+void Liberty::_lib_emit_template (const char *name, const char *prefix,
+				  int trans_cnt, int load_cnt)
 {
   NLFP (_lfp, "%s_template (%s_%dx%d) {\n", name,  prefix,
-	_trans_cnt, _load_cnt);
+	trans_cnt, load_cnt);
   _tab();
 
   if (strcmp (prefix, "power") == 0) {
@@ -312,9 +332,9 @@ void Liberty::_lib_emit_template (const char *name, const char *prefix)
     NLFP (_lfp, "variable_1 : input_net_transition;\n");
   }
   NLFP (_lfp, "variable_2 : total_output_net_capacitance;\n");
-  _dump_index_table (1, _trans_cnt, _trans);
+  _dump_index_table (1, trans_cnt, _trans);
   fprintf (_lfp, "\n");
-  _dump_index_table (2, _load_cnt, _load);
+  _dump_index_table (2, load_cnt, _load);
   fprintf (_lfp, "\n");
 
   _untab();

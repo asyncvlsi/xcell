@@ -289,6 +289,36 @@ Cell::Cell (Liberty *l, Process *p)
     _ext_type = config_get_int (buf);
   }
 
+  num_trans = -1;
+  num_load = -1;
+  
+  snprintf (buf, 1024, "%s.num_trans", cprefix);
+  if (config_exists (buf)) {
+    num_trans = config_get_int (buf);
+    if (num_trans > config_get_table_size ("xcell.input_trans")) {
+      warning ("%s.num_trans larger than input trans table size; ignored.",
+	       cprefix);
+      num_trans = config_get_table_size ("xcell.input_trans");
+    }
+  }
+  else {
+    num_trans = config_get_table_size ("xcell.input_trans");
+  }
+  snprintf (buf, 1024, "%s.num_load", cprefix);
+  if (config_exists (buf)) {
+    num_load = config_get_int (buf);
+    if (num_load > config_get_table_size ("xcell.load")) {
+      warning ("%s.num_load larger than load table size; ignored.",
+	       cprefix);
+      num_load = config_get_table_size ("xcell.load");
+    }
+  }
+  else {
+    num_load = config_get_table_size ("xcell.load");
+  }
+  
+  
+
   printf ("Cell: %s%s\n", p->getName(), _is_external ? " [external]" : "");
   printf (" Ports:");
 
@@ -2064,7 +2094,7 @@ int Cell::_run_dynamic ()
   double window = config_get_real ("xcell.short_window");
   double vdd = config_get_real ("xcell.Vdd");
   double period = config_get_real ("xcell.period");
-  int nslew = config_get_table_size ("xcell.input_trans");
+  int nslew = num_trans;
   double *slew_table = config_get_table_real ("xcell.input_trans");
   int tm;
 
@@ -2083,7 +2113,6 @@ int Cell::_run_dynamic ()
       _dump_dynamic (i);
     }
   }
-
 
   for (int i=0; i < _num_inputs; i++) {
     fprintf (sfp, "Vn%d p%d 0 PWL (0p 0 1000p %g\n", _get_input_pin (i),
@@ -2145,7 +2174,8 @@ int Cell::_run_dynamic ()
     /* -- sweep load! -- */
     fprintf (sfp, "\n.step load LIST ");
     double *load_table = config_get_table_real ("xcell.load");
-    for (int i=0; i < config_get_table_size ("xcell.load"); i++) {
+
+    for (int i=0; i < num_load; i++) {
       fprintf (sfp, " %gf", load_table[i]);
     }
     fprintf (sfp, "\n\n");
@@ -2166,7 +2196,7 @@ int Cell::_run_dynamic ()
 
   /*-- allocate space for dynamic measurements --*/
 
-  int nsweep = config_get_table_size ("xcell.load");
+  int nsweep = num_load;
 
   for (int i=0; i < A_LEN (dyn); i++) {
     MALLOC (dyn[i].delay, double, nsweep*nslew);
@@ -2366,8 +2396,8 @@ int Cell::_run_dynamic ()
 
 void Cell::_emit_dynamic ()
 {
-  int nslew = config_get_table_size ("xcell.input_trans");
-  int nsweep = config_get_table_size ("xcell.load");
+  int nslew = num_trans;
+  int nsweep = num_load;
   double window = config_get_real ("xcell.short_window");
   
   char buf[1024];
@@ -2384,6 +2414,11 @@ void Cell::_emit_dynamic ()
     _l->_tab ();
     
     CNLFP (_lfp, "direction : output;\n");
+
+    if (num_load < config_get_table_size ("xcell.load")) {
+      CNLFP (_lfp, "max_capacitance : %g;\n",
+	     config_get_table_real ("xcell.load")[num_load]*1e-15/config_get_real ("xcell.units.cap_conv"));
+    }
 
     if (!_is_dataflow) {
       CNLFP (_lfp, "function : ");
@@ -2538,11 +2573,9 @@ void Cell::_emit_dynamic ()
       }
 
       CNLFP (_lfp, "%s_power(power_%dx%d) {\n",
-	     dyn[i].out_init == 0 ? "rise" : "fall",
-	     config_get_table_size ("xcell.input_trans"),
-	     config_get_table_size ("xcell.load"));
+	     dyn[i].out_init == 0 ? "rise" : "fall", num_trans, num_load);
       _l->_tab();
-      _l->dump_index_tables ();
+      _l->dump_index_tables (num_trans, num_load);
       
       CNLFP (_lfp, "values(\\\n"); _l->_tab();
       for (int j=0; j < nslew; j++) {
@@ -2601,11 +2634,9 @@ void Cell::_emit_dynamic ()
       /* -- cell rise/fall -- */
       
       CNLFP (_lfp, "cell_%s(delay_%dx%d) {\n",
-	     dyn[i].out_init == 0 ? "rise" : "fall",
-	     config_get_table_size ("xcell.input_trans"),
-	     config_get_table_size ("xcell.load"));
+	     dyn[i].out_init == 0 ? "rise" : "fall", num_trans, num_load);
       _l->_tab();
-      _l->dump_index_tables ();
+      _l->dump_index_tables (num_trans, num_load);
 
       CNLFP (_lfp, "values(\\\n"); _l->_tab();
       for (int j=0; j < nslew; j++) {
@@ -2640,11 +2671,9 @@ void Cell::_emit_dynamic ()
       /* -- transition time -- */
 
       CNLFP (_lfp, "%s_transition(delay_%dx%d) {\n",
-	     dyn[i].out_init == 0 ? "rise" : "fall",
-	     config_get_table_size ("xcell.input_trans"),
-	     config_get_table_size ("xcell.load"));
+	     dyn[i].out_init == 0 ? "rise" : "fall", num_trans, num_load);
       _l->_tab();
-      _l->dump_index_tables ();
+      _l->dump_index_tables (num_trans, num_load);
 
       CNLFP (_lfp, "values(\\\n"); _l->_tab();
       for (int j=0; j < nslew; j++) {
@@ -2718,8 +2747,8 @@ int Cell::_run_dflow_leakage (void)
 
 int Cell::_run_dflow_dynamic (void)
 {
-  int nslew = config_get_table_size ("xcell.input_trans");
-  int nsweep = config_get_table_size ("xcell.load");
+  int nslew = num_trans;
+  int nsweep = num_load;
   char cbuf[1024];
   char pbuf[200];
   

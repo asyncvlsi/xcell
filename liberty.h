@@ -32,10 +32,10 @@ class Liberty {
   Liberty (const char *file);
   ~Liberty();
 
-  void dump_index_tables() {
-    _dump_index_table (1, _trans_cnt, _trans);
+  void dump_index_tables(int num_trans, int num_load) {
+    _dump_index_table (1, num_trans, _trans);
     fprintf (_lfp, "\n");
-    _dump_index_table (2, _load_cnt, _load);
+    _dump_index_table (2, num_load, _load);
     fprintf (_lfp, "\n");
   }
 
@@ -56,7 +56,8 @@ class Liberty {
 
   void _lib_emit_header (const char *file);
 
-  void _lib_emit_template (const char *name, const char *prefix);
+  void _lib_emit_template (const char *name, const char *prefix,
+			   int trans_cnt, int load_cnt);
 
   void _dump_index_table (int idx, int sz, double *table);
   
@@ -150,6 +151,10 @@ class Cell {
 
   int _num_outputs;	/* number of outputs */
   int _num_inputs;
+
+
+  int num_trans;
+  int num_load;
 
   double *leakage_power;	/* leakage power */
 

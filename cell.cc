@@ -46,6 +46,11 @@ static void unlink_files (const char *s, const char *ext[])
   char buf[1024];
   int i = 0;
 
+  if (config_exists ("xcell.keep_files")
+      && (1 == config_get_int ("xcell.keep_files"))) {
+    return;
+  }
+
   while (ext[i]) {
     snprintf (buf, 1024, "%s.%s", s, ext[i]);
     unlink (buf);
@@ -130,7 +135,7 @@ static void print_window (FILE *fp, double start, double end, int val)
 }
 
 
-static struct Hashtable *parse_measurements (const char *s, const char *param = NULL, int skip = 0)
+static struct Hashtable *parse_measurements (const char *s, const char *msg, const char *param = NULL, int skip = 0)
 {
   FILE *fp;
   char buf[1024];
@@ -201,7 +206,7 @@ static struct Hashtable *parse_measurements (const char *s, const char *param = 
     
     if (sscanf (s, "%lg", &v) != 1) {
       if (strncmp (s, "FAILED", 6) == 0) {
-	warning (">> Measurement %s failed", b->key);
+	warning (">> [%s] Measurement %s failed", msg, b->key);
       }
       hash_delete (H, b->key);
       continue;
@@ -862,10 +867,10 @@ int Cell::_run_leakage ()
     Step 2: leakage measurements
   */
   snprintf (buf, 1024, "%s.spi.mt0", file);
-  struct Hashtable *H = parse_measurements (buf);
+  struct Hashtable *H = parse_measurements (buf, "leakage");
   if (!H) {
     snprintf (buf, 1024, "%s.mt0", file);
-    H = parse_measurements (buf);
+    H = parse_measurements (buf, "leakage");
     if (!H) {
       fatal_error ("Could not open measurement output file %s.\n", buf);
     }
@@ -1295,10 +1300,10 @@ int Cell::_run_input_cap ()
   }
 
   snprintf (buf, 1024, "%s.spi.mt0", file);
-  struct Hashtable *H = parse_measurements (buf);
+  struct Hashtable *H = parse_measurements (buf, "input cap");
   if (!H) {
     snprintf (buf, 1024, "%s.mt0", file);
-    H = parse_measurements (buf);
+    H = parse_measurements (buf, "input cap");
     if (!H) {
       fatal_error ("Could not open measurement output from simulation.\n");
     }
@@ -2183,15 +2188,31 @@ int Cell::_run_dynamic ()
       int k = dyn[j].nidx-1;
       double off = tm*period + k*window;
       double st, end;
+      
+      const char *rise_or_fall;
+
+      if (dyn[j].out_init) {
+	rise_or_fall = "FALL";
+      }
+      else {
+	rise_or_fall = "RISE";
+      }
+
+      /* print the final transition arc */
+      fprintf (sfp, "* in[%d] %s; out[%d] %s\n",
+	       dyn[j].in_id, dyn[j].in_init ? "fall" : "rise",
+	       dyn[j].out_id, dyn[j].out_init ? "fall" : "rise");
+
 
       /* 
 	 1. measure delay : 50% input to 50% output 
       */
-      fprintf (sfp, ".measure tran delay_%d_%d trig V(p%d) VAL=%g TD=%gp CROSS=1 targ V(p%d) VAL=%g\n", j, ns, _get_input_pin (dyn[j].in_id), vdd*0.5,
-	       off, _get_output_pin (dyn[j].out_id), vdd*0.5);
+      fprintf (sfp, ".measure tran delay_%d_%d trig V(p%d) VAL=%g TD=%gp CROSS=1 targ V(p%d) VAL=%g %s=1\n", j, ns, _get_input_pin (dyn[j].in_id), vdd*0.5,
+	       off, _get_output_pin (dyn[j].out_id), vdd*0.5, rise_or_fall);
 
-      fprintf (sfp, ".measure tran negdelay_%d_%d trig V(p%d) VAL=%g TD=%gp CROSS=1 targ V(p%d) VAL=%g\n", j, ns, _get_output_pin (dyn[j].out_id), vdd*0.5,
-	       off, _get_input_pin (dyn[j].in_id), vdd*0.5);
+      fprintf (sfp, ".measure tran negdelay_%d_%d trig V(p%d) VAL=%g TD=%gp CROSS=1 targ V(p%d) VAL=%g %s=1\n", j, ns, _get_output_pin (dyn[j].out_id), vdd*0.5,
+	       off, _get_input_pin (dyn[j].in_id), vdd*0.5, rise_or_fall);
+
       /*
 	2. measure output transit time
       */
@@ -2203,17 +2224,18 @@ int Cell::_run_dynamic ()
 	st = vdd*config_get_real("xcell.waveform.fall_high")/100.0;
 	end = vdd*config_get_real("xcell.waveform.fall_low")/100.0;
       }
-      fprintf (sfp, "* in[%d] %s; out[%d] %s\n",
-	       dyn[j].in_id, dyn[j].in_init ? "fall" : "rise",
-	       dyn[j].out_id, dyn[j].out_init ? "fall" : "rise");
-      fprintf (sfp, ".measure tran transit_%d_%d trig V(p%d) VAL=%g TD=%gp CROSS=1 targ V(p%d) VAL=%g\n", j, ns, _get_output_pin (dyn[j].out_id), st, off,
-	       _get_output_pin (dyn[j].out_id), end);
+      fprintf (sfp, ".measure tran transit_%d_%d trig V(p%d) VAL=%g TD=%gp CROSS=1 targ V(p%d) VAL=%g %s=1\n", j, ns, _get_output_pin (dyn[j].out_id), st, off,
+	       _get_output_pin (dyn[j].out_id), end, rise_or_fall);
       
       /*
 	3. Measure internal power
       */
       fprintf (sfp, ".measure tran intpow_%d_%d avg i(Vv1) from %gp to %gp\n",
 	       j, ns, off, off + window);
+
+
+      fprintf (sfp, "\n");
+      
       tm++;
     }
   }
@@ -2242,10 +2264,10 @@ int Cell::_run_dynamic ()
     }
 
     if (is_xyce()) {
-      H = parse_measurements (buf);
+      H = parse_measurements (buf, "dynamic");
     }
     else {
-      H = parse_measurements (buf, "load", nload);
+      H = parse_measurements (buf, "dynamic", "load", nload);
     }
     if (!H) {
       fatal_error ("Could not open measurement output file %s.\n", buf);

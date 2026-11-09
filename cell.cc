@@ -2210,8 +2210,8 @@ int Cell::_run_dynamic ()
       fprintf (sfp, ".measure tran delay_%d_%d trig V(p%d) VAL=%g TD=%gp CROSS=1 targ V(p%d) VAL=%g %s=1\n", j, ns, _get_input_pin (dyn[j].in_id), vdd*0.5,
 	       off, _get_output_pin (dyn[j].out_id), vdd*0.5, rise_or_fall);
 
-      fprintf (sfp, ".measure tran negdelay_%d_%d trig V(p%d) VAL=%g TD=%gp CROSS=1 targ V(p%d) VAL=%g %s=1\n", j, ns, _get_output_pin (dyn[j].out_id), vdd*0.5,
-	       off, _get_input_pin (dyn[j].in_id), vdd*0.5, rise_or_fall);
+      fprintf (sfp, ".measure tran negdelay_%d_%d trig V(p%d) VAL=%g TD=%gp CROSS=1 targ V(p%d) VAL=%g\n", j, ns, _get_output_pin (dyn[j].out_id), vdd*0.5,
+	       off, _get_input_pin (dyn[j].in_id), vdd*0.5);
 
       /*
 	2. measure output transit time
@@ -2328,13 +2328,10 @@ int Cell::_run_dynamic ()
       }
       else if (type == 3) {
 	if (v >= 0 && v < win*0.95) {
-	  if (verbose) {
-	    warning ("negdelay %d %d = %g", i, j, v/1e-12);
-	  }
 	  dyn[i].delay[j+nload*nslew] = -v;
-	  if (verbose > 1) {
+	  warning ("Using the negative delay value (case %d_%d, value %g)"
+		   " in the scenario:", i, j, v/1e-12);
 	    _dump_dynamic (i);
-	  }
 	}
       }
       else if (type == 1) {

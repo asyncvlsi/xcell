@@ -96,7 +96,7 @@ static void print_number (FILE *fp, double x)
   if (x > 1e3) {
     fprintf (fp, "%16.9gK", x*1e-3);
   }
-  if (x > 1e-3) {
+  else if (x > 1e-3) {
     fprintf (fp, "%16.9g", x);
   }
   else if (x > 1e-9) {
@@ -150,7 +150,7 @@ static struct Hashtable *parse_measurements (const char *s, const char *msg, con
 
   H = hash_new (8);
 
-  if (skip > 0 && param) {
+  if (param) {
     is_skip = 1;
   }
   
@@ -679,12 +679,12 @@ int Cell::_run_leakage ()
   _print_all_input_cases (sfp, "p");
   fprintf (sfp, "\n");
 
-  double period = config_get_real ("xcell.period");
+  double period = config_get_real ("xcell.period")*_l->time_to_ps();
   double vdd = config_get_real ("xcell.Vdd");
   
   /* -- measurement of current -- */
   int tm = 1;
-  double lk_window = config_get_real ("xcell.leak_window");
+  double lk_window = config_get_real ("xcell.leak_window")*_l->time_to_ps();
   if (period / (2 * lk_window) < 2) {
     fatal_error ("leak_window parameter (%g) is too large for period (%g)\n",
 		 lk_window, period);
@@ -707,6 +707,8 @@ int Cell::_run_leakage ()
   if (is_hspice()) {
     fprintf (sfp, ".options post post_version=9601\n");
     fprintf (sfp, ".options measform=2\n");
+    fprintf (sfp, ".options accurate\n");
+    fprintf (sfp, ".options gmin=1e-14 gmindc=1e-14 pivtol=1e-15\n");
   }
   
   fprintf (sfp, ".print tran");
@@ -979,9 +981,11 @@ int Cell::_gen_spice_header (FILE *fp)
 
   if (is_xyce()) {
     fprintf (fp, ".options DEVICE TNOM=%g\n", config_get_real ("xcell.T") - 273.15);
+    fprintf (fp, ".options MEASURE MEASDGT=6\n"); 
   }
   else {
     fprintf (fp, ".options TNOM=%g\n", config_get_real ("xcell.T") - 273);
+    fprintf (fp, ".options measdgt=6 numdgt=6\n"); 
   }
 
   /*-- dump subcircuit --*/
@@ -1104,7 +1108,7 @@ int Cell::_get_output_pin (int pin)
 void Cell::_print_all_input_cases (FILE *sfp, const char *prefix)
 {
   double vdd = config_get_real ("xcell.Vdd");
-  double period = config_get_real ("xcell.period");
+  double period = config_get_real ("xcell.period")*_l->time_to_ps();
 
   /* -- leakage scenarios -- */
   
@@ -1268,9 +1272,9 @@ int Cell::_run_input_cap ()
 
   /* measure input delays! */
 
-  double period = config_get_real ("xcell.period");
+  double period = config_get_real ("xcell.period")*_l->time_to_ps();
   double vdd = config_get_real ("xcell.Vdd");
-  double window = config_get_real ("xcell.short_window");
+  double window = config_get_real ("xcell.short_window")*_l->time_to_ps();
 
   double cap_meas = config_get_real ("xcell.cap_measure");
   for (int i=0; i < _num_inputs; i++) {
@@ -1428,8 +1432,8 @@ void Cell::_emit_input_cap ()
 void Cell::_print_input_cap_cases (FILE *sfp, const char *prefix)
 {
   double vdd = config_get_real ("xcell.Vdd");
-  double period = config_get_real ("xcell.period");
-  double window = config_get_real ("xcell.short_window");
+  double period = config_get_real ("xcell.period")*_l->time_to_ps();
+  double window = config_get_real ("xcell.short_window")*_l->time_to_ps();
 
   for (int i=0; i < _num_inputs; i++) {
 
@@ -2091,11 +2095,10 @@ int Cell::_run_dynamic ()
   }
 
   /* emit waveform for each input */
-  double window = config_get_real ("xcell.short_window");
+  double window = config_get_real ("xcell.short_window")*_l->time_to_ps();
   double vdd = config_get_real ("xcell.Vdd");
-  double period = config_get_real ("xcell.period");
+  double period = config_get_real ("xcell.period")*_l->time_to_ps();
   int nslew = num_trans;
-  double *slew_table = config_get_table_real ("xcell.input_trans");
   int tm;
 
   if (A_LEN (dyn) == 0) {
@@ -2142,11 +2145,11 @@ int Cell::_run_dynamic ()
 	      correction = (config_get_real ("xcell.waveform.fall_high") -
 			    config_get_real ("xcell.waveform.fall_low"))/100.0;
 	    }
-	    print_window (sfp, tm*period + k*window + slew_table[ns]/correction,
+	    print_window (sfp, tm*period + k*window + _l->_trans[ns]/correction*_l->time_to_ps(),
 			  tm*period + (k+1)*window, ival);
-	    if (slew_table[ns]/correction >= window) {
+	    if (_l->_trans[ns]/correction*_l->time_to_ps() >= window) {
 	      warning ("Window is too small; needs to be at least %g\n",
-		       slew_table[ns]/correction);
+		       _l->_trans[ns]/correction*_l->time_to_ps());
 	    }
 	  }
 	}
@@ -2161,7 +2164,7 @@ int Cell::_run_dynamic ()
   }
 
   fprintf (sfp, "\n.tran 0.1p ");
-  print_number (sfp, 1e-12*tm*period);
+  print_number (sfp, tm*period*1e-12);
   if (is_xyce()) {
     fprintf (sfp, "\n");
 #if 0
@@ -2173,19 +2176,17 @@ int Cell::_run_dynamic ()
 #endif
     /* -- sweep load! -- */
     fprintf (sfp, "\n.step load LIST ");
-    double *load_table = config_get_table_real ("xcell.load");
 
     for (int i=0; i < num_load; i++) {
-      fprintf (sfp, " %gf", load_table[i]);
+      fprintf (sfp, " %gf", _l->_load[i]*_l->cap_to_ff());
     }
     fprintf (sfp, "\n\n");
   }
   else if (is_hspice()) {
     /* -- sweep load! -- */
     fprintf (sfp, " SWEEP load POI %d", config_get_table_size ("xcell.load"));
-    double *load_table = config_get_table_real ("xcell.load");
     for (int i=0; i < config_get_table_size ("xcell.load"); i++) {
-      fprintf (sfp, " %gf", load_table[i]);
+      fprintf (sfp, " %gf", _l->_load[i]*_l->cap_to_ff());
     }
     fprintf (sfp, "\n\n");
     fprintf (sfp, ".options measform=2\n");
@@ -2277,7 +2278,7 @@ int Cell::_run_dynamic ()
 	    config_get_string ("xcell.spice_binary"), file, file);
   system (buf);
 
-  double win = window*config_get_real ("xcell.units.time_conv");
+  double win = window*1e-12; /*measured delay is in seconds*/
   
   /* -- open measurements, and save data -- */
   int weird_error = 0;
@@ -2344,12 +2345,12 @@ int Cell::_run_dynamic ()
 
       if (type == 0) {
 	/* normal delay */
-	if (v >= 0 && v < 0.95*win) {
+	if (v >= 0 && v < 0.95*window) {
 	  dyn[i].delay[j+nload*nslew] = v;
 	}
 	else if (v > 0) {
 	  if (verbose) {
-	    warning ("Dynamic scenario #%d, slew #%d delay (%g) larger than 95%% of window (%g)", i, j, v, 0.95*win);
+	    warning ("Dynamic scenario #%d, slew #%d delay (%g) larger than 95%% of window (%g) ps", i, j, v, 0.95*window);
 	    if (verbose > 1) {
 	      _dump_dynamic (i);
 	    }
@@ -2357,9 +2358,9 @@ int Cell::_run_dynamic ()
 	}	
       }
       else if (type == 3) {
-	if (v >= 0 && v < win*0.95) {
+	if (v >= 0 && v < window*0.95) {
 	  dyn[i].delay[j+nload*nslew] = -v;
-	  warning ("Using the negative delay value (case %d_%d, value %g)"
+	  warning ("Using the negative delay value (case %d_%d, value %g s)"
 		   " in the scenario:", i, j, v/1e-12);
 	    _dump_dynamic (i);
 	}
@@ -2398,7 +2399,7 @@ void Cell::_emit_dynamic ()
 {
   int nslew = num_trans;
   int nsweep = num_load;
-  double window = config_get_real ("xcell.short_window");
+  double window = config_get_real ("xcell.short_window")*_l->time_to_ps();
   
   char buf[1024];
   
@@ -2417,7 +2418,7 @@ void Cell::_emit_dynamic ()
 
     if (num_load < config_get_table_size ("xcell.load")) {
       CNLFP (_lfp, "max_capacitance : %g;\n",
-	     config_get_table_real ("xcell.load")[num_load]*1e-15/config_get_real ("xcell.units.cap_conv"));
+	     _l->_load[num_load]);
     }
 
     if (!_is_dataflow) {
@@ -2578,6 +2579,7 @@ void Cell::_emit_dynamic ()
       _l->dump_index_tables (num_trans, num_load);
       
       CNLFP (_lfp, "values(\\\n"); _l->_tab();
+      double vdd = config_get_real ("xcell.Vdd");
       for (int j=0; j < nslew; j++) {
 	CNLFP (_lfp, "\"");
 	for (int k=0; k < nsweep; k++) {
@@ -2585,12 +2587,14 @@ void Cell::_emit_dynamic ()
 	  if (k != 0) {
 	    fprintf (_lfp, ", ");
 	  }
-	  /*-- XXX: fixme: units, internal power definition --*/
+	  /*-- XXX: fixme: internal power definition --*/
 	  dp = dyn[i].intpow[j + k*nslew];
 	  dp = dp - leakage_power[idx_case];
-	  /* internal power is always in fJ */
-	  dp = dp*window*1e-12;	/* picoseconds * power */
-	  dp /= 1e-15;
+	  dp = dp*window*1e-12;	/* ps * W */
+	  if (dyn[i].out_init == 0) {   /* substract C*V^2 when output is rising */
+	    dp -= _l->_load[k]*config_get_real("xcell.units.cap_conv") * vdd * vdd;   
+	  }
+	  dp /=(config_get_real ("xcell.units.current_conv")*config_get_real ("xcell.units.time_conv"));
 	  fprintf (_lfp, "%g", dp);
 	}
 	fprintf (_lfp, "\"");
@@ -2654,7 +2658,7 @@ void Cell::_emit_dynamic ()
 	    dp = 0;
 	  }
 #endif	  
-	  fprintf (_lfp, "%g", dp);
+	  fprintf (_lfp, "%.9g", dp);
 	}
 	fprintf (_lfp, "\"");
 	if (j != nslew-1) {
@@ -2686,7 +2690,7 @@ void Cell::_emit_dynamic ()
 	  /*-- XXX: fixme: units, internal power definition --*/
 	  dp = dyn[i].transit[j+k*nslew];
 	  dp /= config_get_real ("xcell.units.time_conv");
-	  fprintf (_lfp, "%g", dp);
+	  fprintf (_lfp, "%.9g", dp);
 	}
 	fprintf (_lfp, "\"");
 	if (j != nslew-1) {

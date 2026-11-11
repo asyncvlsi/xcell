@@ -166,6 +166,8 @@ Liberty::Liberty (const char *file)
     str = "k";
   }
   config_set_string ("xcell.units.resis", str);
+  _time_to_ps = config_get_real("xcell.units.time_conv")/1e-12;
+  _cap_to_ff  = config_get_real("xcell.units.cap_conv")/1e-15;
 
   _trans_cnt = config_get_table_size ("xcell.input_trans");
   _trans = config_get_table_real ("xcell.input_trans");

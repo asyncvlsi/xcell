@@ -31,6 +31,8 @@ class Liberty {
  public:
   Liberty (const char *file);
   ~Liberty();
+  double time_to_ps () {return _time_to_ps;}
+  double cap_to_ff ()  {return _cap_to_ff;}
 
   void dump_index_tables(int num_trans, int num_load) {
     _dump_index_table (1, num_trans, _trans);
@@ -52,7 +54,8 @@ class Liberty {
   double *_trans;
   int _load_cnt;
   double *_load;
-  
+  double _time_to_ps;
+  double _cap_to_ff;
 
   void _lib_emit_header (const char *file);
 

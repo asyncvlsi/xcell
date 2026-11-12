@@ -96,7 +96,7 @@ static void print_number (FILE *fp, double x)
   if (x > 1e3) {
     fprintf (fp, "%16.9gK", x*1e-3);
   }
-  if (x > 1e-3) {
+  else if (x > 1e-3) {
     fprintf (fp, "%16.9g", x);
   }
   else if (x > 1e-9) {
@@ -150,7 +150,7 @@ static struct Hashtable *parse_measurements (const char *s, const char *msg, con
 
   H = hash_new (8);
 
-  if (skip > 0 && param) {
+  if (param) {
     is_skip = 1;
   }
   
@@ -707,6 +707,8 @@ int Cell::_run_leakage ()
   if (is_hspice()) {
     fprintf (sfp, ".options post post_version=9601\n");
     fprintf (sfp, ".options measform=2\n");
+    fprintf (sfp, ".options gmin=1e-14 gmindc=1e-14 pivtol=1e-15\n");
+    fprintf (sfp, ".options accurate\n");
   }
   
   fprintf (sfp, ".print tran");
@@ -979,9 +981,11 @@ int Cell::_gen_spice_header (FILE *fp)
 
   if (is_xyce()) {
     fprintf (fp, ".options DEVICE TNOM=%g\n", config_get_real ("xcell.T") - 273.15);
+    fprintf (fp, ".options MEASURE MEASDGT=6\n");
   }
   else {
     fprintf (fp, ".options TNOM=%g\n", config_get_real ("xcell.T") - 273);
+    fprintf (fp, ".options measdgt=6 numdgt=6\n");
   }
 
   /*-- dump subcircuit --*/
@@ -2575,9 +2579,10 @@ void Cell::_emit_dynamic ()
       CNLFP (_lfp, "%s_power(power_%dx%d) {\n",
 	     dyn[i].out_init == 0 ? "rise" : "fall", num_trans, num_load);
       _l->_tab();
-      _l->dump_index_tables (num_trans, num_load);
+      _l->dump_index_tables (num_trans, num_load, config_get_real("xcell.units.time_conv"), config_get_real("xcell.units.cap_conv"));
       
       CNLFP (_lfp, "values(\\\n"); _l->_tab();
+      double vdd = config_get_real ("xcell.Vdd");
       for (int j=0; j < nslew; j++) {
 	CNLFP (_lfp, "\"");
 	for (int k=0; k < nsweep; k++) {
@@ -2590,7 +2595,10 @@ void Cell::_emit_dynamic ()
 	  dp = dp - leakage_power[idx_case];
 	  /* internal power is always in fJ */
 	  dp = dp*window*1e-12;	/* picoseconds * power */
-	  dp /= 1e-15;
+	  if (dyn[i].out_init == 0) {   /* substract C*V^2 when output is rising */
+	    dp -= _l->_load[k]*1e-15 * vdd * vdd;
+	  }
+	  dp /= (config_get_real ("xcell.units.current_conv")*config_get_real ("xcell.units.time_conv")); 
 	  fprintf (_lfp, "%g", dp);
 	}
 	fprintf (_lfp, "\"");
@@ -2636,7 +2644,7 @@ void Cell::_emit_dynamic ()
       CNLFP (_lfp, "cell_%s(delay_%dx%d) {\n",
 	     dyn[i].out_init == 0 ? "rise" : "fall", num_trans, num_load);
       _l->_tab();
-      _l->dump_index_tables (num_trans, num_load);
+      _l->dump_index_tables (num_trans, num_load, config_get_real("xcell.units.time_conv"), config_get_real("xcell.units.cap_conv"));
 
       CNLFP (_lfp, "values(\\\n"); _l->_tab();
       for (int j=0; j < nslew; j++) {
@@ -2654,7 +2662,7 @@ void Cell::_emit_dynamic ()
 	    dp = 0;
 	  }
 #endif	  
-	  fprintf (_lfp, "%g", dp);
+	  fprintf (_lfp, "%.9g", dp);
 	}
 	fprintf (_lfp, "\"");
 	if (j != nslew-1) {
@@ -2673,7 +2681,7 @@ void Cell::_emit_dynamic ()
       CNLFP (_lfp, "%s_transition(delay_%dx%d) {\n",
 	     dyn[i].out_init == 0 ? "rise" : "fall", num_trans, num_load);
       _l->_tab();
-      _l->dump_index_tables (num_trans, num_load);
+      _l->dump_index_tables (num_trans, num_load,config_get_real("xcell.units.time_conv") ,config_get_real("xcell.units.cap_conv"));
 
       CNLFP (_lfp, "values(\\\n"); _l->_tab();
       for (int j=0; j < nslew; j++) {
@@ -2686,7 +2694,7 @@ void Cell::_emit_dynamic ()
 	  /*-- XXX: fixme: units, internal power definition --*/
 	  dp = dyn[i].transit[j+k*nslew];
 	  dp /= config_get_real ("xcell.units.time_conv");
-	  fprintf (_lfp, "%g", dp);
+	  fprintf (_lfp, "%.9g", dp);
 	}
 	fprintf (_lfp, "\"");
 	if (j != nslew-1) {

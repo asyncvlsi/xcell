@@ -32,10 +32,10 @@ class Liberty {
   Liberty (const char *file);
   ~Liberty();
 
-  void dump_index_tables(int num_trans, int num_load) {
-    _dump_index_table (1, num_trans, _trans);
+  void dump_index_tables(int num_trans, int num_load, double time_conv, double load_conv) {
+    _dump_index_table (1, num_trans, _trans, 1e-12/time_conv);
     fprintf (_lfp, "\n");
-    _dump_index_table (2, num_load, _load);
+    _dump_index_table (2, num_load, _load, 1e-15/load_conv);
     fprintf (_lfp, "\n");
   }
 
@@ -59,7 +59,7 @@ class Liberty {
   void _lib_emit_template (const char *name, const char *prefix,
 			   int trans_cnt, int load_cnt);
 
-  void _dump_index_table (int idx, int sz, double *table);
+  void _dump_index_table (int idx, int sz, double *table, double unit_conv);
   
 
   friend class Cell;

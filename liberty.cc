@@ -31,6 +31,7 @@ Liberty::Liberty (const char *file)
   char *buf;
 
   _tabs = 0;
+  _area = NULL;
   
   MALLOC (buf, char, strlen (file) + 6);
   snprintf (buf, strlen (file)+6, "%s.lib", file);
@@ -356,3 +357,46 @@ void Liberty::_dump_index_table (int idx, int sz, double *tab, double unit_conv)
 }
 
 
+void Liberty::read_area (const char *file)
+{
+  if (!file) return;
+  
+  FILE *fp = fopen (file, "r");
+  if (!fp) {
+    fatal_error ("Could not open area table file `%s'", file);
+  }
+
+  char buf[1024];
+
+  _area = hash_new (4);
+
+  int line = 0;
+  
+  while (fgets (buf, 1024, fp)) {
+    line++;
+    char cell[1024];
+    double area;
+    if (buf[0] == '#') continue;
+    if (sscanf (buf, "%s %lg", cell, &area) == 2) {
+      hash_bucket_t *b;
+      if (hash_lookup (_area, cell)) {
+	warning ("Duplicate cell area information for `%s'; skipped", cell);
+      }
+      else {
+	b = hash_add (_area, cell);
+	b->f = area;
+      }
+    }
+    else {
+      warning ("Line %d skipped.", line);
+    }
+  }
+  fclose (fp);
+}
+
+
+hash_bucket_t *Liberty::have_area (const char *cell)
+{
+  if (!_area) return NULL;
+  return hash_lookup (_area, cell);
+}

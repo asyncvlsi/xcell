@@ -319,7 +319,7 @@ Cell::Cell (Liberty *l, Process *p)
   
   
 
-  printf ("Cell: %s%s\n", p->getName(), _is_external ? " [external]" : "");
+  printf ("  Cell: %s%s\n", p->getName(), _is_external ? " [external]" : "");
   printf (" Ports:");
 
   for (int i=0; i < A_LEN (nl->bN->ports); i++) {
@@ -446,8 +446,17 @@ void Cell::_printHeader ()
   fprintf (_lfp, ") {\n");
   _l->_tab();
 
-  /* XXX what is this? */
-  CNLFP (_lfp, "area : 25;\n");
+  if (_l->area_table()) {
+    char buf[1024];
+    a->msnprintfproc (buf, 1024, _p);
+    hash_bucket_t *b = _l->have_area (buf);
+    if (b) {
+      CNLFP (_lfp, "area : %d;\n", (int) b->f);
+    }
+    else {
+      warning ("Area for `%s': missing from area table", buf);
+    }
+  }
 
   /* XXX: fixme emit power and ground pins */
   CNLFP (_lfp, "pg_pin(GND) {\n");

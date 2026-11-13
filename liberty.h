@@ -39,6 +39,11 @@ class Liberty {
     fprintf (_lfp, "\n");
   }
 
+  void read_area (const char *file);
+  bool area_table () { return _area == NULL ? false : true; }
+  hash_bucket_t *have_area (const char *cell);
+
+
  private:
   FILE *_lfp;			/* file */
 
@@ -52,7 +57,8 @@ class Liberty {
   double *_trans;
   int _load_cnt;
   double *_load;
-  
+
+  struct Hashtable *_area;
 
   void _lib_emit_header (const char *file);
 

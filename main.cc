@@ -61,6 +61,10 @@ int main (int argc, char **argv)
   np->run();
 
   Liberty L(argv[2]);
+
+  if (config_exists ("xcell.area_table")) {
+    L.read_area (config_get_string ("xcell.area_table"));
+  }
   
   UserDef  *topu = a->Global()->findType ("characterize<>");
   if (!topu) {

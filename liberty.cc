@@ -332,9 +332,9 @@ void Liberty::_lib_emit_template (const char *name, const char *prefix,
     NLFP (_lfp, "variable_1 : input_net_transition;\n");
   }
   NLFP (_lfp, "variable_2 : total_output_net_capacitance;\n");
-  _dump_index_table (1, trans_cnt, _trans);
+  _dump_index_table (1, trans_cnt, _trans, 1e-12/config_get_real("xcell.units.time_conv"));
   fprintf (_lfp, "\n");
-  _dump_index_table (2, load_cnt, _load);
+  _dump_index_table (2, load_cnt, _load, 1e-15/config_get_real("xcell.units.cap_conv"));
   fprintf (_lfp, "\n");
 
   _untab();
@@ -342,7 +342,7 @@ void Liberty::_lib_emit_template (const char *name, const char *prefix,
 }
 
 
-void Liberty::_dump_index_table (int idx, int sz, double *tab)
+void Liberty::_dump_index_table (int idx, int sz, double *tab, double unit_conv)
 {
   NLFP (_lfp, "index_%d(\"", idx);
 
@@ -350,7 +350,7 @@ void Liberty::_dump_index_table (int idx, int sz, double *tab)
     if (i != 0) {
       fprintf (_lfp, ", ");
     }
-    fprintf (_lfp, "%g", tab[i]);
+    fprintf (_lfp, "%g", tab[i]*unit_conv);
   }
   fprintf (_lfp, "\");");
 }

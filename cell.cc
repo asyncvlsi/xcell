@@ -299,6 +299,8 @@ Cell::Cell (Liberty *l, Process *p)
       warning ("%s.num_trans larger than input trans table size; ignored.",
 	       cprefix);
       num_trans = config_get_table_size ("xcell.input_trans");
+    }
+    else {
       if (num_trans < 1) {
 	num_trans = 1;
       }
@@ -314,6 +316,8 @@ Cell::Cell (Liberty *l, Process *p)
       warning ("%s.num_load larger than load table size; ignored.",
 	       cprefix);
       num_load = config_get_table_size ("xcell.load");
+    }
+    else {
       if (num_load < 1) {
 	num_load = 1;
       }
@@ -322,8 +326,6 @@ Cell::Cell (Liberty *l, Process *p)
   else {
     num_load = config_get_table_size ("xcell.load");
   }
-  
-  
 
   printf ("  Cell: %s%s\n", p->getName(), _is_external ? " [external]" : "");
   printf (" Ports:");
@@ -1438,10 +1440,12 @@ void Cell::_emit_input_cap ()
     CNLFP (_lfp, "direction : input;\n");
 
     if (num_trans < config_get_table_size ("xcell.input_trans")) {
+      /* we have specified a max transition time for this cell that is
+	 lower than those covered by the table; so set a limit */
       CNLFP (_lfp, "max_transition  : %g;\n",
 	     config_get_table_real ("xcell.input_trans")[num_trans-1]*1e-12/config_get_real ("xcell.units.time_conv"));
     }
-    
+
     CNLFP (_lfp, "rise_capacitance : %g;\n", time_up[i]/config_get_real ("xcell.units.cap_conv"));
     CNLFP (_lfp, "fall_capacitance : %g;\n", time_dn[i]/config_get_real ("xcell.units.cap_conv"));
     _l->_untab();
@@ -2440,6 +2444,8 @@ void Cell::_emit_dynamic ()
     
     CNLFP (_lfp, "direction : output;\n");
 
+    /* we have specified a maximum load characterization that is
+       limited, so make sure we don't exceed it */
     if (num_load < config_get_table_size ("xcell.load")) {
       CNLFP (_lfp, "max_capacitance : %g;\n",
 	     config_get_table_real ("xcell.load")[num_load-1]*1e-15/config_get_real ("xcell.units.cap_conv"));

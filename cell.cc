@@ -2593,11 +2593,19 @@ void Cell::_emit_dynamic ()
 	  /*-- XXX: fixme: units, internal power definition --*/
 	  dp = dyn[i].intpow[j + k*nslew];
 	  dp = dp - leakage_power[idx_case];
-	  /* internal power is always in fJ */
 	  dp = dp*window*1e-12;	/* picoseconds * power */
-	  if (dyn[i].out_init == 0) {   /* substract C*V^2 when output is rising */
+	  if (dyn[i].out_init == 0) {
+	    /* substract C*V^2 when output is rising */
 	    dp -= _l->_load[k]*1e-15 * vdd * vdd;
 	  }
+	  /*
+	   * Units for internal_power()?
+	   *
+	   * Current guess: internal power units are derived from
+	   * current units and time units.
+	   *
+	   * Previous guess: internal power is always in fJ
+	   */
 	  dp /= (config_get_real ("xcell.units.current_conv")*config_get_real ("xcell.units.time_conv")); 
 	  fprintf (_lfp, "%g", dp);
 	}
